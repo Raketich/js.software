@@ -82,17 +82,17 @@ jobs:
       - name: Configure automatic code signing
         run: |
           # Create the Xcode project directory if it doesn't exist
-          xcodebuild -project src-tauri/gen/apple/tauri-solid-app.xcodeproj -list
+          xcodebuild -project src-tauri/gen/apple/app.xcodeproj -list
 
           # Configure automatic code signing
-          /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:CODE_SIGN_STYLE string Automatic" src-tauri/gen/apple/tauri-solid-app.xcodeproj/project.pbxproj 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:CODE_SIGN_STYLE Automatic" src-tauri/gen/apple/tauri-solid-app.xcodeproj/project.pbxproj 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:DEVELOPMENT_TEAM string ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/tauri-solid-app.xcodeproj/project.pbxproj 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:DEVELOPMENT_TEAM ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/tauri-solid-app.xcodeproj/project.pbxproj 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:CODE_SIGN_STYLE string Automatic" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:CODE_SIGN_STYLE Automatic" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:DEVELOPMENT_TEAM string ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:DEVELOPMENT_TEAM ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
           # Directly modify the Info.plist after project initialization
-          mkdir -p src-tauri/gen/apple/tauri-solid-app/tauri-solid-app || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.tauri-solid-app.app" src-tauri/gen/apple/tauri-solid-app/tauri-solid-app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.tauri-solid-app.app" src-tauri/gen/apple/tauri-solid-app/tauri-solid-app/Info.plist 2>/dev/null || true
+          mkdir -p src-tauri/gen/apple/app_iOS || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.jssoftware.ui" src-tauri/gen/apple/app_iOS/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.jssoftware.ui" src-tauri/gen/apple/app_iOS/Info.plist 2>/dev/null || true
 
       # Create ExportOptions.plist for proper IPA packaging
       - name: Create export options
@@ -190,6 +190,6 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ios-device-solidjs-app
+          name: js-software-ui-ios-app
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
