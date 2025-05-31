@@ -149,7 +149,7 @@ jobs:
 
           💾 Download and install to test the latest features!
           " \
-            --testers "${{ vars.FIREBASE_TESTERS || '' }}"
+            --testers "${{ secrets.FIREBASE_TESTERS || '' }}"
 
       - name: Clean up Firebase credentials
         if: always()
@@ -159,6 +159,8 @@ jobs:
       # Diawi App Distribution
       - name: Upload to Diawi
         uses: rnkdsh/action-upload-diawi@v1.5.9
+        timeout-minutes: 10
+        continue-on-error: true
         with:
           token: ${{ secrets.DIAWI_TOKEN }}
           file: ${{ env.APK_PATH }}
@@ -175,6 +177,13 @@ jobs:
         id: diawi_upload
 
       - name: Output Diawi Results
+        if: steps.diawi_upload.outcome == 'success'
         run: |
           echo "📱 Diawi URL: ${{ steps.diawi_upload.outputs.url }}"
           echo "📱 Diawi QR Code: ${{ steps.diawi_upload.outputs.qrcode }}"
+
+      - name: Diawi Upload Failed
+        if: steps.diawi_upload.outcome != 'success'
+        run: |
+          echo "⚠️ Diawi upload failed or timed out. Check Diawi service status."
+          echo "You can manually upload the APK to https://www.diawi.com/"
