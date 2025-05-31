@@ -137,7 +137,6 @@ jobs:
           firebase appdistribution:distribute "${{ env.APK_PATH }}" \
             --project "$FIREBASE_PROJECT_ID" \
             --app "$FIREBASE_APP_ID" \
-            --groups "internal-team" \
             --release-notes "
           🚀 New JS Software UI Build - Version 1.0.${{ github.run_number }}
 
@@ -156,3 +155,26 @@ jobs:
         if: always()
         run: |
           rm -f $RUNNER_TEMP/firebase-service-account.json
+
+      # Diawi App Distribution
+      - name: Upload to Diawi
+        uses: rnkdsh/action-upload-diawi@v1.5.9
+        with:
+          token: ${{ secrets.DIAWI_TOKEN }}
+          file: ${{ env.APK_PATH }}
+          comment: |
+            🚀 JS Software UI Build - Version 1.0.${{ github.run_number }}
+
+            📱 Built from: ${{ github.ref_name }}
+            🔗 Commit: ${{ github.sha }}
+            👤 Author: ${{ github.actor }}
+
+            📝 Changes: ${{ github.event.head_commit.message }}
+          recipients: ${{ vars.DIAWI_TESTERS || '' }}
+          password: ${{ secrets.DIAWI_PASSWORD || '' }}
+        id: diawi_upload
+
+      - name: Output Diawi Results
+        run: |
+          echo "📱 Diawi URL: ${{ steps.diawi_upload.outputs.url }}"
+          echo "📱 Diawi QR Code: ${{ steps.diawi_upload.outputs.qrcode }}"
