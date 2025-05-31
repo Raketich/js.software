@@ -113,3 +113,46 @@ jobs:
           name: js-software-ui-android-release
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
+
+      # Firebase App Distribution
+      - name: Setup Firebase CLI
+        run: |
+          curl -sL https://firebase.tools | bash
+          firebase --version
+
+      - name: Authenticate with Firebase
+        env:
+          FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT_KEY" | base64 -d > $RUNNER_TEMP/firebase-service-account.json
+          export GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json
+          firebase projects:list
+
+      - name: Upload to Firebase App Distribution
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: $RUNNER_TEMP/firebase-service-account.json
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+        run: |
+          firebase appdistribution:distribute "${{ env.APK_PATH }}" \
+            --project "$FIREBASE_PROJECT_ID" \
+            --app "$FIREBASE_APP_ID" \
+            --groups "internal-team" \
+            --release-notes "
+          🚀 New JS Software UI Build - Version 1.0.${{ github.run_number }}
+
+          📱 Built from: ${{ github.ref_name }}
+          🔗 Commit: ${{ github.sha }}
+          👤 Author: ${{ github.actor }}
+
+          📝 Changes in this build:
+          ${{ github.event.head_commit.message }}
+
+          💾 Download and install to test the latest features!
+          " \
+            --testers "${{ vars.FIREBASE_TESTERS || '' }}"
+
+      - name: Clean up Firebase credentials
+        if: always()
+        run: |
+          rm -f $RUNNER_TEMP/firebase-service-account.json
