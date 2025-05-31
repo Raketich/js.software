@@ -125,12 +125,13 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
         run: |
           echo "$FIREBASE_SERVICE_ACCOUNT_KEY" | base64 -d > $RUNNER_TEMP/firebase-service-account.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json" >> $GITHUB_ENV
           export GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json
+          firebase auth:login --service-account $RUNNER_TEMP/firebase-service-account.json
           firebase projects:list
 
       - name: Upload to Firebase App Distribution
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: $RUNNER_TEMP/firebase-service-account.json
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
         run: |
