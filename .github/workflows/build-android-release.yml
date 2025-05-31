@@ -134,11 +134,16 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
         run: |
-          firebase appdistribution:distribute "${{ env.APK_PATH }}" \
-            --project "$FIREBASE_PROJECT_ID" \
-            --app "$FIREBASE_APP_ID" \
-            --release-notes "
-          🚀 New JS Software UI Build - Version 1.0.${{ github.run_number }}
+          # Debug testers variable
+          echo "Debug: FIREBASE_TESTERS value: '${{ vars.FIREBASE_TESTERS }}'"
+          echo "Debug: Length of FIREBASE_TESTERS: ${#FIREBASE_TESTERS}"
+
+          # Use custom release notes if provided, otherwise generate default ones
+          CUSTOM_NOTES="${{ github.event.inputs.release_notes }}"
+          if [ -n "$CUSTOM_NOTES" ]; then
+            RELEASE_NOTES="$CUSTOM_NOTES"
+          else
+            RELEASE_NOTES="🚀 New JS Software UI Build - Version 1.0.${{ github.run_number }}
 
           📱 Built from: ${{ github.ref_name }}
           🔗 Commit: ${{ github.sha }}
@@ -148,8 +153,22 @@ jobs:
           ${{ github.event.head_commit.message }}
 
           💾 Download and install to test the latest features!
-          " \
-            --testers "${{ secrets.FIREBASE_TESTERS || '' }}"
+          "
+          fi
+
+          TESTERS_PARAM=""
+          if [ -n "${{ vars.FIREBASE_TESTERS }}" ]; then
+            TESTERS_PARAM="--testers ${{ vars.FIREBASE_TESTERS }}"
+            echo "Using testers: ${{ vars.FIREBASE_TESTERS }}"
+          else
+            echo "No testers specified"
+          fi
+
+          firebase appdistribution:distribute "${{ env.APK_PATH }}" \
+            --project "$FIREBASE_PROJECT_ID" \
+            --app "$FIREBASE_APP_ID" \
+            --release-notes "$RELEASE_NOTES" \
+            $TESTERS_PARAM
 
       - name: Clean up Firebase credentials
         if: always()
@@ -158,32 +177,59 @@ jobs:
 
       # Diawi App Distribution
       - name: Upload to Diawi
-        uses: rnkdsh/action-upload-diawi@v1.5.9
-        timeout-minutes: 10
+        run: |
+          echo "📤 Uploading APK to Diawi..."
+
+          # Upload to Diawi API
+          UPLOAD_RESPONSE=$(curl -X POST "https://upload.diawi.com/" \
+            -F "token=${{ secrets.DIAWI_TOKEN }}" \
+            -F "file=@${{ env.APK_PATH }}" \
+            -F "comment=🚀 JS Software UI Build - Version 1.0.${{ github.run_number }} | 📱 Built from: ${{ github.ref_name }} | 🔗 Commit: ${{ github.sha }} | 👤 Author: ${{ github.actor }} | 📝 Changes: ${{ github.event.head_commit.message }}" \
+            -F "callback_emails=${{ vars.DIAWI_TESTERS || '' }}" \
+            --silent --show-error)
+
+          echo "Upload Response: $UPLOAD_RESPONSE"
+
+          # Extract job ID from response
+          JOB_ID=$(echo "$UPLOAD_RESPONSE" | grep -o '"job":"[^"]*"' | cut -d'"' -f4)
+
+          if [ -z "$JOB_ID" ]; then
+            echo "❌ Failed to get job ID from Diawi"
+            exit 0
+          fi
+
+          echo "📋 Job ID: $JOB_ID"
+          echo "⏳ Waiting for processing..."
+
+          # Poll for completion (max 5 minutes)
+          for i in {1..30}; do
+            sleep 10
+            STATUS_RESPONSE=$(curl -X GET "https://upload.diawi.com/status?token=${{ secrets.DIAWI_TOKEN }}&job=$JOB_ID" --silent)
+            echo "Status check $i: $STATUS_RESPONSE"
+            
+            if echo "$STATUS_RESPONSE" | grep -q '"status":2000'; then
+              # Success
+              DIAWI_HASH=$(echo "$STATUS_RESPONSE" | grep -o '"hash":"[^"]*"' | cut -d'"' -f4)
+              DIAWI_URL="https://i.diawi.com/$DIAWI_HASH"
+              echo "✅ Upload successful!"
+              echo "📱 Diawi URL: $DIAWI_URL"
+              echo "📱 QR Code: https://www.diawi.com/qrcode/link/$DIAWI_HASH"
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q '"status":4000'; then
+              # Error
+              echo "❌ Diawi upload failed"
+              break
+            fi
+            
+            if [ $i -eq 30 ]; then
+              echo "⏰ Upload timed out after 5 minutes"
+            fi
+          done
         continue-on-error: true
-        with:
-          token: ${{ secrets.DIAWI_TOKEN }}
-          file: ${{ env.APK_PATH }}
-          comment: |
-            🚀 JS Software UI Build - Version 1.0.${{ github.run_number }}
 
-            📱 Built from: ${{ github.ref_name }}
-            🔗 Commit: ${{ github.sha }}
-            👤 Author: ${{ github.actor }}
-
-            📝 Changes: ${{ github.event.head_commit.message }}
-          recipients: ${{ vars.DIAWI_TESTERS || '' }}
-          password: ${{ secrets.DIAWI_PASSWORD || '' }}
-        id: diawi_upload
-
-      - name: Output Diawi Results
-        if: steps.diawi_upload.outcome == 'success'
+      - name: Diawi Manual Upload Info
+        if: failure()
         run: |
-          echo "📱 Diawi URL: ${{ steps.diawi_upload.outputs.url }}"
-          echo "📱 Diawi QR Code: ${{ steps.diawi_upload.outputs.qrcode }}"
-
-      - name: Diawi Upload Failed
-        if: steps.diawi_upload.outcome != 'success'
-        run: |
-          echo "⚠️ Diawi upload failed or timed out. Check Diawi service status."
-          echo "You can manually upload the APK to https://www.diawi.com/"
+          echo "⚠️ Diawi upload failed. You can manually upload at:"
+          echo "🔗 https://www.diawi.com/"
+          echo "📁 File: ${{ env.APK_PATH }}"
