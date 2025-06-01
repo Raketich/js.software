@@ -128,7 +128,7 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>method</key>
-              <string>ad-hoc</string>
+              <string>release-testing</string>
               <key>teamID</key>
               <string>${{ secrets.APPLE_TEAM_ID }}</string>
               <key>signingStyle</key>
@@ -158,7 +158,7 @@ jobs:
           security find-identity -v -p codesigning
 
           # Build for iOS with ad-hoc distribution
-          bun tauri ios build --export-method ad-hoc
+          bun tauri ios build --export-method release-testing
 
       - name: Find and upload IPA
         run: |
