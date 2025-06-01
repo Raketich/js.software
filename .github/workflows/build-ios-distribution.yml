@@ -68,6 +68,20 @@ jobs:
           echo "Installed provisioning profiles:"
           ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
 
+          # Validate the provisioning profile
+          echo "Validating provisioning profile..."
+          PROFILE_CONTENT=$(security cms -D -i ~/Library/MobileDevice/Provisioning\ Profiles/adhoc.mobileprovision 2>/dev/null)
+          PROFILE_BUNDLE_ID=$(echo "$PROFILE_CONTENT" | plutil -extract Entitlements.application-identifier xml1 -o - - 2>/dev/null | plutil -p - 2>/dev/null | tr -d '"' | sed 's/^[^.]*\.//')
+
+          echo "Profile Bundle ID: $PROFILE_BUNDLE_ID"
+          echo "Expected Bundle ID: software.js.ui"
+
+          if [[ "$PROFILE_BUNDLE_ID" == "software.js.ui" || "$PROFILE_BUNDLE_ID" == "*" ]]; then
+            echo "✅ Provisioning profile matches bundle identifier"
+          else
+            echo "⚠️ Warning: Provisioning profile bundle ID doesn't match. This might cause signing issues."
+          fi
+
       # Configure Tauri for iOS Distribution
       - name: Configure iOS Distribution in Tauri
         run: |
@@ -75,10 +89,10 @@ jobs:
           if grep -q '"iOS": {' src-tauri/tauri.conf.json; then
             echo "iOS section exists, updating configuration"
             # Update existing iOS section with distribution settings
-            sed -i '' 's/"iOS": {/"iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}",\n      "provisioningProfileName": "JS Software UI Ad Hoc",/' src-tauri/tauri.conf.json
+            sed -i '' 's/"iOS": {/"iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}",/' src-tauri/tauri.conf.json
           else
             echo "Adding iOS section to bundle for distribution"
-            sed -i '' '/"bundle": {/,/^  }/ s/"targets": "all",/"targets": "all",\n    "iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}",\n      "provisioningProfileName": "JS Software UI Ad Hoc"\n    },/' src-tauri/tauri.conf.json
+            sed -i '' '/"bundle": {/,/^  }/ s/"targets": "all",/"targets": "all",\n    "iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}"\n    },/' src-tauri/tauri.conf.json
           fi
 
           # Verify the configuration
@@ -108,13 +122,12 @@ jobs:
           # List available schemes and targets
           xcodebuild -project "$PROJECT_PATH" -list
 
-          # Configure for manual signing with distribution profile
+          # Configure for automatic signing with distribution team
           xcodebuild -project "$PROJECT_PATH" \
             -target "app_iOS" \
             -configuration Release \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
-            CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="JS Software UI Ad Hoc" \
+            CODE_SIGN_STYLE=Automatic \
             CODE_SIGN_IDENTITY="iPhone Distribution" \
             -showBuildSettings
 
