@@ -51,7 +51,25 @@ jobs:
       - name: Install provisioning profile
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo -n "${{ secrets.IOS_ADHOC_PROVISIONING_PROFILE }}" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/adhoc.mobileprovision
+          echo -n "${{ secrets.IOS_ADHOC_PROVISIONING_PROFILE }}" | base64 --decode > adhoc.mobileprovision
+
+          # Extract UUID from provisioning profile for proper naming
+          PROFILE_UUID=$(security cms -D -i adhoc.mobileprovision | plutil -extract UUID xml1 - -o - | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
+          echo "Provisioning profile UUID: $PROFILE_UUID"
+
+          # Install with proper UUID naming
+          cp adhoc.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
+
+          # Verify installation
+          echo "Installed provisioning profiles:"
+          ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
+
+          # Check profile contents
+          echo "Profile details:"
+          security cms -D -i adhoc.mobileprovision | plutil -p -
+
+          # Clean up
+          rm adhoc.mobileprovision
 
       - name: Add iOS section with developmentTeam
         run: |
@@ -83,11 +101,20 @@ jobs:
           # Create the Xcode project directory if it doesn't exist
           xcodebuild -project src-tauri/gen/apple/app.xcodeproj -list
 
+          # Get the provisioning profile UUID
+          PROFILE_UUID=$(find ~/Library/MobileDevice/Provisioning\ Profiles/ -name "*.mobileprovision" -exec basename {} .mobileprovision \; | head -1)
+          echo "Using provisioning profile UUID: $PROFILE_UUID"
+
           # Configure automatic code signing (like the working workflow)
           /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:CODE_SIGN_STYLE string Automatic" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:CODE_SIGN_STYLE Automatic" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:DEVELOPMENT_TEAM string ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:DEVELOPMENT_TEAM ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+
+          # Set provisioning profile UUID for automatic signing
+          /usr/libexec/PlistBuddy -c "Add :objects:*:buildSettings:PROVISIONING_PROFILE_SPECIFIER string $PROFILE_UUID" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:PROVISIONING_PROFILE_SPECIFIER $PROFILE_UUID" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+
           # Directly modify the Info.plist after project initialization
           mkdir -p src-tauri/gen/apple/app_iOS || true
           /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string software.js.ui" src-tauri/gen/apple/app_iOS/Info.plist 2>/dev/null || true
@@ -128,8 +155,16 @@ jobs:
           echo "Using Export Options:"
           cat ExportOptions.plist
 
-          # Build for release/distribution
-          bun run tauri ios build --debug
+          # Debug keychain info
+          echo "Available identities:"
+          security find-identity -v -p codesigning
+
+          # Debug Xcode project settings
+          echo "Xcode project build settings:"
+          xcodebuild -project src-tauri/gen/apple/app.xcodeproj -target app_iOS -showBuildSettings | grep -E "(CODE_SIGN|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER)"
+
+          # Build for release/distribution (not debug)
+          bun run tauri ios build
 
       # Find and upload the IPA file (same as working workflow)
       - name: Locate IPA file
