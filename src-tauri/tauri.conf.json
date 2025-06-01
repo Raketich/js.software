@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "JS Software UI",
   "version": "0.1.0",
-  "identifier": "com.jssoftware.ui",
+  "identifier": "software.js.ui",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -40,5 +40,6 @@
     "category": "DeveloperTool",
     "shortDescription": "Kitchen sink showcase of Solid UI components",
     "longDescription": "A comprehensive showcase application demonstrating various Solid UI components and patterns for developers."
-  }
+  },
+  "plugins": {}
 }
