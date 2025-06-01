@@ -122,33 +122,61 @@ jobs:
           # List available schemes and targets
           xcodebuild -project "$PROJECT_PATH" -list
 
-          # Get the provisioning profile UUID
-          PROFILE_UUID=$(security cms -D -i ~/Library/MobileDevice/Provisioning\ Profiles/adhoc.mobileprovision | plutil -extract UUID xml1 -o - | plutil -p - | tr -d '"')
+          # Extract provisioning profile UUID properly
+          PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/adhoc.mobileprovision"
+
+          if [ ! -f "$PROFILE_PATH" ]; then
+            echo "Error: Provisioning profile not found at $PROFILE_PATH"
+            ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/"
+            exit 1
+          fi
+
+          echo "Extracting provisioning profile UUID..."
+          PROFILE_CONTENT=$(security cms -D -i "$PROFILE_PATH")
+          PROFILE_UUID=$(echo "$PROFILE_CONTENT" | plutil -extract UUID xml1 -o - - | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
+
+          if [ -z "$PROFILE_UUID" ]; then
+            echo "Error: Could not extract UUID from provisioning profile"
+            echo "Profile content preview:"
+            echo "$PROFILE_CONTENT" | head -20
+            exit 1
+          fi
+
           echo "Provisioning Profile UUID: $PROFILE_UUID"
 
-          # Configure manual signing by modifying project.pbxproj directly
+          # Configure signing by directly modifying the pbxproj file
           PBXPROJ_PATH="$PROJECT_PATH/project.pbxproj"
+
+          if [ ! -f "$PBXPROJ_PATH" ]; then
+            echo "Error: project.pbxproj not found"
+            exit 1
+          fi
 
           # Backup the original
           cp "$PBXPROJ_PATH" "$PBXPROJ_PATH.backup"
 
-          # Update signing settings for release configuration
-          sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$PBXPROJ_PATH"
-          sed -i '' "s/DEVELOPMENT_TEAM = \"\";/DEVELOPMENT_TEAM = \"${{ secrets.APPLE_TEAM_ID }}\";/g" "$PBXPROJ_PATH"
+          # Escape special characters in team ID for sed
+          TEAM_ID_ESCAPED=$(echo "${{ secrets.APPLE_TEAM_ID }}" | sed 's/[[\.*^$()+?{|]/\\&/g')
 
-          # Add provisioning profile specifier
-          sed -i '' "s/DEVELOPMENT_TEAM = \"${{ secrets.APPLE_TEAM_ID }}\";/DEVELOPMENT_TEAM = \"${{ secrets.APPLE_TEAM_ID }}\";" "$PBXPROJ_PATH"
-          sed -i '' "s/DEVELOPMENT_TEAM = \"${{ secrets.APPLE_TEAM_ID }}\";/DEVELOPMENT_TEAM = \"${{ secrets.APPLE_TEAM_ID }}\";\n\t\t\tPROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_UUID\";/" "$PBXPROJ_PATH"
+          echo "Updating Xcode project settings..."
 
-          # Set code sign identity
-          sed -i '' "s/CODE_SIGN_IDENTITY = \"\";/CODE_SIGN_IDENTITY = \"iPhone Distribution\";/g" "$PBXPROJ_PATH"
-          sed -i '' "s/\"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]\" = \"\";/\"CODE_SIGN_IDENTITY[sdk=iphoneos*]\" = \"iPhone Distribution\";/g" "$PBXPROJ_PATH"
+          # Update signing settings - use perl for more reliable replacements
+          perl -i -pe 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBXPROJ_PATH"
+          perl -i -pe 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "'$TEAM_ID_ESCAPED'";/g' "$PBXPROJ_PATH"
+          perl -i -pe 's/CODE_SIGN_IDENTITY = "";/CODE_SIGN_IDENTITY = "iPhone Distribution";/g' "$PBXPROJ_PATH"
+          perl -i -pe 's/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = "";/"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";/g' "$PBXPROJ_PATH"
+
+          # Add provisioning profile specifier after DEVELOPMENT_TEAM lines
+          perl -i -pe 's/(DEVELOPMENT_TEAM = "'$TEAM_ID_ESCAPED'";)/$1\n\t\t\tPROVISIONING_PROFILE_SPECIFIER = "'$PROFILE_UUID'";/g' "$PBXPROJ_PATH"
 
           echo "✅ Updated Xcode project for manual distribution signing"
 
           # Verify the changes
           echo "Verifying signing configuration:"
-          grep -A 5 -B 5 "CODE_SIGN_STYLE\|DEVELOPMENT_TEAM\|PROVISIONING_PROFILE" "$PBXPROJ_PATH" | head -20
+          grep -n "CODE_SIGN_STYLE\|DEVELOPMENT_TEAM\|PROVISIONING_PROFILE_SPECIFIER\|CODE_SIGN_IDENTITY" "$PBXPROJ_PATH" | head -10
+
+          echo "Build settings verification:"
+          xcodebuild -project "$PROJECT_PATH" -target "app_iOS" -configuration release -showBuildSettings | grep -E "CODE_SIGN|DEVELOPMENT_TEAM|PROVISIONING" | head -10
 
       # Build iOS app for distribution
       - name: Build iOS App for Distribution
