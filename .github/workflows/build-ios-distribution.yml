@@ -177,13 +177,55 @@ jobs:
           echo "Installed profiles:"
           ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
 
+      # Create ExportOptions.plist for distribution export
+      - name: Create ExportOptions.plist
+        run: |
+          echo "📝 Creating ExportOptions.plist for ad-hoc distribution..."
+
+          cat > ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>ad-hoc</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>signingCertificate</key>
+              <string>iPhone Distribution</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>software.js.ui</key>
+                  <string>${PROFILE_UUID}</string>
+              </dict>
+              <key>compileBitcode</key>
+              <false/>
+              <key>uploadBitcode</key>
+              <false/>
+              <key>uploadSymbols</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          echo "✅ ExportOptions.plist created:"
+          cat ExportOptions.plist
+
+          # Copy to project directory for Tauri to find
+          cp ExportOptions.plist src-tauri/gen/apple/
+
       # Build for distribution
       - name: Build iOS app for distribution
         env:
           DEVELOPER_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           echo "🚀 Building iOS app for distribution..."
-          bun tauri ios build --export-method release-testing
+
+          # Build with explicit export options
+          cd src-tauri
+          bun tauri ios build --export-method ad-hoc
 
       # Find and upload IPA to Diawi
       - name: Upload to Diawi
