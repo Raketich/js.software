@@ -225,7 +225,7 @@ jobs:
 
           # Build with explicit export options
           cd src-tauri
-          bun tauri ios build --export-method ad-hoc
+          bun tauri ios build --export-method release-testing
 
       # Find and upload IPA to Diawi
       - name: Upload to Diawi
