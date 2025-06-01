@@ -67,12 +67,24 @@ jobs:
           base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
-      # Build release APK using Tauri (release mode is default)
+          echo "=== Keystore Properties File ==="
+          cat keystore.properties
+          echo "=== Keystore File Info ==="
+          ls -la $RUNNER_TEMP/keystore.jks
+          echo "=== Keystore Content Verification ==="
+          keytool -list -keystore $RUNNER_TEMP/keystore.jks -storepass ${{ secrets.ANDROID_KEY_PASSWORD }} || echo "Failed to verify keystore"
+
+      # Build release APK using Tauri with explicit signing
       - name: Build Android app
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.2.9519653
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.2.9519653
-        run: bun run tauri android build
+        run: |
+          echo "=== Building signed APK ==="
+          bun run tauri android build --apk
+
+          echo "=== Checking build outputs ==="
+          find src-tauri/gen/android -name "*.apk" -type f -exec ls -la {} \;
 
       - name: Find APK location
         run: |
