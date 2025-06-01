@@ -66,7 +66,7 @@ jobs:
 
       - name: Build iOS app for ad-hoc distribution
         run: |
-          bun run tauri ios build --export-method ad-hoc --verbose
+          bun run tauri ios build --export-method release-testing --verbose
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           IOS_CERTIFICATE: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE }}
