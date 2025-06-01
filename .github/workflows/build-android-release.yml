@@ -176,6 +176,26 @@ jobs:
           rm -f $RUNNER_TEMP/firebase-service-account.json
 
       # Diawi App Distribution
+      - name: Debug APK Info
+        run: |
+          echo "🔍 APK Debug Information:"
+          echo "📁 File: ${{ env.APK_PATH }}"
+          echo "📏 Size: $(du -h "${{ env.APK_PATH }}" | cut -f1)"
+          echo "📏 Size (bytes): $(stat -c%s "${{ env.APK_PATH }}")"
+
+          # Check if APK is signed
+          if aapt dump badging "${{ env.APK_PATH }}" | grep -q "application-label"; then
+            echo "✅ APK appears to be valid"
+          else
+            echo "❌ APK might be invalid or corrupted"
+          fi
+
+          # Try to get more info about signing
+          if command -v apksigner > /dev/null; then
+            echo "🔐 Signature info:"
+            apksigner verify --verbose "${{ env.APK_PATH }}" || echo "❌ APK is not signed"
+          fi
+
       - name: Upload to Diawi
         run: |
           echo "📤 Uploading APK to Diawi..."
@@ -184,8 +204,7 @@ jobs:
           UPLOAD_RESPONSE=$(curl -X POST "https://upload.diawi.com/" \
             -F "token=${{ secrets.DIAWI_TOKEN }}" \
             -F "file=@${{ env.APK_PATH }}" \
-            -F "comment=🚀 JS Software UI Build - Version 1.0.${{ github.run_number }} | 📱 Built from: ${{ github.ref_name }} | 🔗 Commit: ${{ github.sha }} | 👤 Author: ${{ github.actor }} | 📝 Changes: ${{ github.event.head_commit.message }}" \
-            -F "callback_emails=${{ vars.DIAWI_TESTERS || '' }}" \
+            -F "comment=Build ${{ github.run_number }} from ${{ github.ref_name }}" \
             --silent --show-error)
 
           echo "Upload Response: $UPLOAD_RESPONSE"
@@ -200,6 +219,9 @@ jobs:
 
           echo "📋 Job ID: $JOB_ID"
           echo "⏳ Waiting for processing..."
+
+          # Save job ID for manual checking
+          echo "🔗 Manual status check: https://upload.diawi.com/status?token=${{ secrets.DIAWI_TOKEN }}&job=$JOB_ID"
 
           # Poll for completion (max 5 minutes)
           for i in {1..30}; do
