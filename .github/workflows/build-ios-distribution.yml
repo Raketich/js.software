@@ -88,6 +88,42 @@ jobs:
       - name: Initialize Tauri iOS
         run: bun run tauri ios init
 
+      - name: Configure manual code signing for distribution
+        run: |
+          # Configure manual code signing for distribution
+          xcodebuild -project src-tauri/gen/apple/app.xcodeproj -list
+
+          # Set manual signing and distribution profile
+          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:CODE_SIGN_STYLE Manual" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:DEVELOPMENT_TEAM ${{ secrets.APPLE_TEAM_ID }}" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+
+          # Find the provisioning profile UUID we installed
+          PROFILE_UUID=$(find ~/Library/MobileDevice/Provisioning\ Profiles/ -name "*.mobileprovision" -exec basename {} .mobileprovision \; | head -1)
+          echo "Using provisioning profile UUID: $PROFILE_UUID"
+
+          # Set the provisioning profile UUID in Xcode project
+          /usr/libexec/PlistBuddy -c "Set :objects:*:buildSettings:PROVISIONING_PROFILE_SPECIFIER $PROFILE_UUID" src-tauri/gen/apple/app.xcodeproj/project.pbxproj 2>/dev/null || true
+
+      - name: Create export options for ad-hoc distribution
+        run: |
+          cat > ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>ad-hoc</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+          </dict>
+          </plist>
+          EOF
+
+          # Copy to the Xcode project directory
+          cp ExportOptions.plist src-tauri/gen/apple/
+
       - name: Build iOS app for ad-hoc distribution
         run: |
           bun run tauri ios build --export-method release-testing --verbose
