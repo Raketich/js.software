@@ -138,8 +138,8 @@ jobs:
         run: |
           echo "🔨 Building iOS app for ad-hoc distribution..."
 
-          # Build using Tauri with release configuration
-          bun run tauri ios build --release
+          # Build using Tauri
+          bun run tauri ios build
 
           echo "📁 Checking build outputs:"
           find src-tauri -name "*.ipa" -o -name "*.app" | head -10
