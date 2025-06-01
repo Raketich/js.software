@@ -95,25 +95,65 @@ jobs:
       # Critical fixes based on our local debugging
       - name: Apply distribution signing fixes
         run: |
-          echo "🔧 Applying fixes learned from local debugging..."
+          echo "🔧 Applying comprehensive distribution signing fixes..."
+
+          PBXPROJ_FILE="src-tauri/gen/apple/app.xcodeproj/project.pbxproj"
 
           # 1. Fix bundle ID from com.jssoftware.ui to software.js.ui
-          echo "Fixing bundle ID in Xcode project..."
-          sed -i '' 's/com\.jssoftware\.ui/software.js.ui/g' src-tauri/gen/apple/app.xcodeproj/project.pbxproj
+          echo "1️⃣ Fixing bundle ID..."
+          sed -i '' 's/com\.jssoftware\.ui/software.js.ui/g' "$PBXPROJ_FILE"
 
-          # 2. Switch from automatic to manual signing for distribution
-          echo "Switching to manual signing..."
-          sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' src-tauri/gen/apple/app.xcodeproj/project.pbxproj
+          # 2. Switch ALL instances from automatic to manual signing
+          echo "2️⃣ Switching to manual signing (comprehensive)..."
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBXPROJ_FILE"
+          sed -i '' 's/"CODE_SIGN_STYLE\[sdk=iphoneos\*\]" = Automatic;/"CODE_SIGN_STYLE[sdk=iphoneos*]" = Manual;/g' "$PBXPROJ_FILE"
 
-          # 3. Change code sign identity to distribution
-          echo "Setting distribution code sign identity..."
-          sed -i '' 's/iPhone Developer/iPhone Distribution/g' src-tauri/gen/apple/app.xcodeproj/project.pbxproj
+          # Also ensure no leftover automatic signing
+          sed -i '' 's/ProvisioningStyle = Automatic;/ProvisioningStyle = Manual;/g' "$PBXPROJ_FILE"
 
-          # 4. Add provisioning profile specifier
-          echo "Adding provisioning profile specifier..."
-          sed '259s/$/\n                                PROVISIONING_PROFILE_SPECIFIER = "'$PROFILE_UUID'";/' src-tauri/gen/apple/app.xcodeproj/project.pbxproj > temp_pbxproj && mv temp_pbxproj src-tauri/gen/apple/app.xcodeproj/project.pbxproj
+          # 3. Set distribution code sign identity comprehensively
+          echo "3️⃣ Setting iPhone Distribution identity..."
+          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = "iPhone Developer";/"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";/g' "$PBXPROJ_FILE"
+          sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "iPhone Distribution";/g' "$PBXPROJ_FILE"
+          sed -i '' 's/"iPhone Developer"/"iPhone Distribution"/g' "$PBXPROJ_FILE"
 
-          echo "✅ All distribution fixes applied!"
+          # 4. Add development team everywhere needed
+          echo "4️⃣ Setting development team..."
+          sed -i '' 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "${{ secrets.APPLE_TEAM_ID }}";/g' "$PBXPROJ_FILE"
+
+          # Add DEVELOPMENT_TEAM if missing - using printf for proper formatting
+          if ! grep -q "DEVELOPMENT_TEAM" "$PBXPROJ_FILE"; then
+            sed -i '' '/CODE_SIGN_IDENTITY.*iPhone Distribution/a\
+          				DEVELOPMENT_TEAM = "${{ secrets.APPLE_TEAM_ID }}";' "$PBXPROJ_FILE"
+          fi
+
+          # 5. Add provisioning profile specifier for all configurations
+          echo "5️⃣ Adding provisioning profile specifier..."
+
+          # Remove any existing PROVISIONING_PROFILE_SPECIFIER
+          sed -i '' '/PROVISIONING_PROFILE_SPECIFIER/d' "$PBXPROJ_FILE"
+
+          # Add PROVISIONING_PROFILE_SPECIFIER after each CODE_SIGN_IDENTITY line
+          sed -i '' '/CODE_SIGN_IDENTITY.*iPhone Distribution/a\
+          				PROVISIONING_PROFILE_SPECIFIER = "'$PROFILE_UUID'";' "$PBXPROJ_FILE"
+
+          # 6. Remove any PROVISIONING_PROFILE settings (UUID-based, not name-based)
+          echo "6️⃣ Cleaning up old provisioning profile settings..."
+          sed -i '' '/PROVISIONING_PROFILE = /d' "$PBXPROJ_FILE"
+
+          echo "✅ All comprehensive distribution fixes applied!"
+
+          # 7. Verification - show what we changed
+          echo ""
+          echo "🔍 Verification of changes:"
+          echo "Bundle ID occurrences:"
+          grep -c "software.js.ui" "$PBXPROJ_FILE" || echo "0"
+          echo "Manual signing occurrences:"
+          grep -c "CODE_SIGN_STYLE = Manual" "$PBXPROJ_FILE" || echo "0"
+          echo "Distribution identity occurrences:"  
+          grep -c "iPhone Distribution" "$PBXPROJ_FILE" || echo "0"
+          echo "Profile specifier occurrences:"
+          grep -c "PROVISIONING_PROFILE_SPECIFIER" "$PBXPROJ_FILE" || echo "0"
 
       # Verify configuration before build
       - name: Verify configuration
