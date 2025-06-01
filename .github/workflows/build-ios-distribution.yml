@@ -216,6 +216,12 @@ jobs:
           echo "Created exportOptions.plist:"
           cat exportOptions.plist
 
+          # Copy to multiple locations where Tauri might look for it
+          cp exportOptions.plist src-tauri/
+          cp exportOptions.plist src-tauri/gen/apple/
+          mkdir -p src-tauri/gen/apple/app.xcodeproj
+          cp exportOptions.plist src-tauri/gen/apple/app.xcodeproj/
+
       # Build for distribution
       - name: Build iOS app for distribution
         env:
@@ -234,8 +240,8 @@ jobs:
           echo "Profiles available to xcodebuild:"
           find ~/Library/MobileDevice/Provisioning\ Profiles -name "*.mobileprovision" -exec basename {} \; 2>/dev/null || echo "No profiles found"
 
-          # Try with explicit signing environment and export options
-          bun tauri ios build --export-method release-testing -- --exportOptionsPlist exportOptions.plist
+          # Build with environment variables (remove unsupported exportOptionsPlist)
+          bun tauri ios build --export-method release-testing
 
       # Find and upload IPA to Diawi
       - name: Upload to Diawi
