@@ -47,6 +47,7 @@ jobs:
           p12-file-base64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE }}
           p12-password: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           keychain-password: ${{ github.run_id }}
+          create-keychain: true
 
       # Install provisioning profile with correct UUID naming
       - name: Install provisioning profile
@@ -189,13 +190,52 @@ jobs:
           echo "Installed profiles:"
           ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
 
+      # Create export options for the build
+      - name: Create exportOptions.plist
+        run: |
+          echo "📝 Creating exportOptions.plist for export..."
+
+          cat > exportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>ad-hoc</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>software.js.ui</key>
+                  <string>${PROFILE_UUID}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          echo "Created exportOptions.plist:"
+          cat exportOptions.plist
+
       # Build for distribution
       - name: Build iOS app for distribution
         env:
           DEVELOPER_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_SIGNING_IDENTITY: "iPhone Distribution"
+          IOS_PROVISIONING_PROFILE: ${{ env.PROFILE_UUID }}
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
+          PROVISIONING_PROFILE_SPECIFIER: ${{ env.PROFILE_UUID }}
         run: |
           echo "🚀 Building iOS app for distribution..."
-          bun tauri ios build --export-method release-testing
+          echo "Using signing identity: $IOS_SIGNING_IDENTITY"
+          echo "Using provisioning profile: $IOS_PROVISIONING_PROFILE"
+          echo "Team ID: $DEVELOPER_TEAM_ID"
+
+          # Show what profiles are available for export
+          echo "Profiles available to xcodebuild:"
+          find ~/Library/MobileDevice/Provisioning\ Profiles -name "*.mobileprovision" -exec basename {} \; 2>/dev/null || echo "No profiles found"
+
+          # Try with explicit signing environment and export options
+          bun tauri ios build --export-method release-testing -- --exportOptionsPlist exportOptions.plist
 
       # Find and upload IPA to Diawi
       - name: Upload to Diawi
