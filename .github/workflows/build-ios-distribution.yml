@@ -64,11 +64,35 @@ jobs:
       - name: Build frontend
         run: bun run build
 
+      - name: Add iOS section with developmentTeam
+        run: |
+          # First check if we need to add iOS section
+          if grep -q '"iOS": {' src-tauri/tauri.conf.json; then
+            echo "iOS section exists, checking for developmentTeam"
+            if grep -q '"developmentTeam"' src-tauri/tauri.conf.json; then
+              echo "Updating existing developmentTeam"
+              sed -i '' 's/"developmentTeam": "[^"]*"/"developmentTeam": "${{ secrets.APPLE_TEAM_ID }}"/' src-tauri/tauri.conf.json
+            else
+              echo "Adding developmentTeam to existing iOS section"
+              sed -i '' 's/"iOS": {/"iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}",/' src-tauri/tauri.conf.json
+            fi
+          else
+            echo "Adding iOS section to bundle"
+            sed -i '' '/"bundle": {/,/^  }/ s/"targets": "all",/"targets": "all",\n    "iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}"\n    },/' src-tauri/tauri.conf.json
+          fi
+
+          # Verify the change
+          echo "Updated tauri.conf.json:"
+          cat src-tauri/tauri.conf.json
+
+      - name: Initialize Tauri iOS
+        run: bun run tauri ios init
+
       - name: Build iOS app for ad-hoc distribution
         run: |
           bun run tauri ios build --export-method release-testing --verbose
         env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
           IOS_CERTIFICATE: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_MOBILE_PROVISION: ${{ secrets.IOS_ADHOC_PROVISIONING_PROFILE }}
