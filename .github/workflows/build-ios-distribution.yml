@@ -1,0 +1,305 @@
+name: Build and Distribute iOS App
+
+on:
+  push:
+    branches: [ci/tauri-workflows]
+  pull_request:
+    branches: [ci/tauri-workflows]
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: "Custom release notes for this build"
+        required: false
+        default: ""
+
+jobs:
+  build-ios-distribution:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install iOS Dependencies
+        run: rustup target add aarch64-apple-ios
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install project dependencies
+        run: bun install --frozen
+
+      - name: Set Version
+        shell: bash
+        run: |
+          echo "Version: 1.0.${GITHUB_RUN_NUMBER}"
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"1.0.${GITHUB_RUN_NUMBER}\"/" package.json
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"1.0.${GITHUB_RUN_NUMBER}\"/" src-tauri/tauri.conf.json
+
+      - name: Build frontend
+        run: bun run build:just
+
+      # iOS Code Signing Setup
+      - name: Setup iOS Distribution Signing
+        id: ios-signing
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE }}
+          p12-password: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          keychain-password: ${{ github.run_id }}
+
+      - name: Install Ad Hoc Provisioning Profile
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo -n "${{ secrets.IOS_ADHOC_PROVISIONING_PROFILE }}" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/adhoc.mobileprovision
+
+          # Verify the profile was installed correctly
+          echo "Installed provisioning profiles:"
+          ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      # Configure Tauri for iOS Distribution
+      - name: Configure iOS Distribution in Tauri
+        run: |
+          # Add iOS section with distribution team for ad-hoc distribution
+          if grep -q '"iOS": {' src-tauri/tauri.conf.json; then
+            echo "iOS section exists, updating configuration"
+            # Update existing iOS section with distribution settings
+            sed -i '' 's/"iOS": {/"iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}",\n      "provisioningProfileName": "JS Software UI Ad Hoc",/' src-tauri/tauri.conf.json
+          else
+            echo "Adding iOS section to bundle for distribution"
+            sed -i '' '/"bundle": {/,/^  }/ s/"targets": "all",/"targets": "all",\n    "iOS": {\n      "developmentTeam": "${{ secrets.APPLE_TEAM_ID }}",\n      "provisioningProfileName": "JS Software UI Ad Hoc"\n    },/' src-tauri/tauri.conf.json
+          fi
+
+          # Verify the configuration
+          echo "Updated tauri.conf.json iOS section:"
+          cat src-tauri/tauri.conf.json | grep -A 10 "iOS"
+
+      # Initialize Tauri iOS
+      - name: Initialize Tauri iOS
+        run: bun run tauri ios init
+
+      # Configure Xcode project for distribution
+      - name: Configure Xcode for Distribution
+        run: |
+          # Wait for Xcode project to be fully generated
+          sleep 5
+
+          PROJECT_PATH="src-tauri/gen/apple/app.xcodeproj"
+
+          if [ ! -d "$PROJECT_PATH" ]; then
+            echo "Error: Xcode project not found at $PROJECT_PATH"
+            find src-tauri -name "*.xcodeproj" -type d
+            exit 1
+          fi
+
+          echo "Configuring Xcode project for distribution signing..."
+
+          # List available schemes and targets
+          xcodebuild -project "$PROJECT_PATH" -list
+
+          # Configure for manual signing with distribution profile
+          xcodebuild -project "$PROJECT_PATH" \
+            -target "app_iOS" \
+            -configuration Release \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="JS Software UI Ad Hoc" \
+            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            -showBuildSettings
+
+      # Build iOS app for distribution
+      - name: Build iOS App for Distribution
+        env:
+          DEVELOPER_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "🔨 Building iOS app for ad-hoc distribution..."
+
+          # Build using Tauri with release configuration
+          bun run tauri ios build --release
+
+          echo "📁 Checking build outputs:"
+          find src-tauri -name "*.ipa" -o -name "*.app" | head -10
+
+      # Find and prepare IPA for distribution
+      - name: Locate and Prepare IPA
+        run: |
+          echo "🔍 Searching for IPA files..."
+
+          # Look for IPA first (Tauri might generate one directly)
+          IPA_PATH=$(find src-tauri -name "*.ipa" -type f | head -n 1)
+
+          if [ -n "$IPA_PATH" ]; then
+            echo "✅ Found IPA generated by Tauri: $IPA_PATH"
+          else
+            echo "🔧 No IPA found, creating from .app file..."
+            
+            # Find the app file
+            APP_PATH=$(find src-tauri -name "app_iOS.app" -o -name "*.app" -type d | head -n 1)
+            
+            if [ -z "$APP_PATH" ]; then
+              echo "❌ No .app file found!"
+              find src-tauri -type d | grep -i app
+              exit 1
+            fi
+            
+            echo "📱 Found app at: $APP_PATH"
+            
+            # Create IPA manually
+            IPA_DIR=$(dirname "$APP_PATH")
+            IPA_NAME="js-software-ui-ios-1.0.${{ github.run_number }}.ipa"
+            
+            # Create Payload directory structure
+            PAYLOAD_DIR="$IPA_DIR/Payload"
+            mkdir -p "$PAYLOAD_DIR"
+            
+            # Copy app to Payload
+            cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+            
+            # Create IPA
+            cd "$IPA_DIR"
+            zip -r "$IPA_NAME" Payload
+            rm -rf Payload
+            
+            IPA_PATH="$IPA_DIR/$IPA_NAME"
+            echo "✅ Created IPA: $IPA_PATH"
+          fi
+
+          # Verify IPA
+          echo "📊 IPA Information:"
+          ls -lh "$IPA_PATH"
+
+          # Check IPA structure
+          echo "📦 IPA Contents:"
+          unzip -l "$IPA_PATH" | head -10
+
+          # Export path for next steps
+          echo "IPA_PATH=$IPA_PATH" >> $GITHUB_ENV
+          echo "Final IPA path: $IPA_PATH"
+
+      # Upload IPA as artifact
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-software-ui-ios-distribution-${{ github.run_number }}
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+
+      # Diawi Distribution as backup
+      - name: Debug IPA for Diawi
+        run: |
+          echo "🔍 IPA Debug Information for Diawi:"
+          echo "📁 File: ${{ env.IPA_PATH }}"
+          echo "📏 Size: $(du -h "${{ env.IPA_PATH }}" | cut -f1)"
+          echo "📏 Size (bytes): $(stat -f%z "${{ env.IPA_PATH }}")"
+
+          # Verify IPA structure
+          echo "📦 IPA structure verification:"
+          unzip -t "${{ env.IPA_PATH }}" | head -5
+
+      - name: Upload to Diawi (Backup Distribution)
+        run: |
+          echo "📤 Uploading IPA to Diawi as backup distribution..."
+
+          # Upload to Diawi API
+          UPLOAD_RESPONSE=$(curl -X POST "https://upload.diawi.com/" \
+            -F "token=${{ secrets.DIAWI_TOKEN }}" \
+            -F "file=@${{ env.IPA_PATH }}" \
+            -F "comment=iOS Build ${{ github.run_number }} from ${{ github.ref_name }} (Ad-Hoc)" \
+            -F "callback_emails=${{ vars.DIAWI_NOTIFICATION_EMAILS }}" \
+            --silent --show-error)
+
+          echo "📋 Upload Response: $UPLOAD_RESPONSE"
+
+          # Extract job ID
+          JOB_ID=$(echo "$UPLOAD_RESPONSE" | grep -o '"job":"[^"]*"' | cut -d'"' -f4)
+
+          if [ -z "$JOB_ID" ]; then
+            echo "❌ Failed to get job ID from Diawi"
+            echo "Response was: $UPLOAD_RESPONSE"
+            exit 0
+          fi
+
+          echo "🆔 Job ID: $JOB_ID"
+          echo "⏳ Waiting for Diawi processing..."
+
+          # Poll for completion (max 10 minutes for iOS)
+          for i in {1..60}; do
+            sleep 10
+            STATUS_RESPONSE=$(curl -X GET "https://upload.diawi.com/status?token=${{ secrets.DIAWI_TOKEN }}&job=$JOB_ID" --silent)
+            echo "📊 Status check $i: $STATUS_RESPONSE"
+            
+            if echo "$STATUS_RESPONSE" | grep -q '"status":2000'; then
+              # Success
+              DIAWI_HASH=$(echo "$STATUS_RESPONSE" | grep -o '"hash":"[^"]*"' | cut -d'"' -f4)
+              DIAWI_URL="https://i.diawi.com/$DIAWI_HASH"
+              
+              echo "✅ Diawi upload successful!"
+              echo "📱 Diawi Install URL: $DIAWI_URL"
+              echo "📱 QR Code: https://www.diawi.com/qrcode/link/$DIAWI_HASH"
+              
+              # Create summary for GitHub
+              echo "## 🍎 iOS Distribution Links" >> $GITHUB_STEP_SUMMARY
+              echo "- **Direct Install**: [$DIAWI_URL]($DIAWI_URL)" >> $GITHUB_STEP_SUMMARY
+              echo "- **QR Code**: [Generate QR](https://www.diawi.com/qrcode/link/$DIAWI_HASH)" >> $GITHUB_STEP_SUMMARY
+              echo "- **Firebase App Distribution**: Check Firebase console" >> $GITHUB_STEP_SUMMARY
+              
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q '"status":4000'; then
+              # Error
+              echo "❌ Diawi upload failed"
+              ERROR_MSG=$(echo "$STATUS_RESPONSE" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+              echo "Error message: $ERROR_MSG"
+              break
+            fi
+            
+            if [ $i -eq 60 ]; then
+              echo "⏰ Upload timed out after 10 minutes"
+              echo "🔗 Manual status check: https://upload.diawi.com/status?token=${{ secrets.DIAWI_TOKEN }}&job=$JOB_ID"
+            fi
+          done
+        continue-on-error: true
+
+      - name: Distribution Summary
+        if: always()
+        run: |
+          echo "## 📱 iOS Distribution Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: 1.0.${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **File Size**: $(du -h "${{ env.IPA_PATH }}" | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Distribution Methods" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Firebase App Distribution** - Check your Firebase console" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Diawi** - Links provided above (if successful)" >> $GITHUB_STEP_SUMMARY
+          echo "3. **GitHub Artifacts** - Download from this workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation Notes" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Ad-Hoc Distribution**: Only devices with registered UDIDs can install this app" >> $GITHUB_STEP_SUMMARY
+          echo "📱 **Device Registration**: Contact admin to add your device UDID" >> $GITHUB_STEP_SUMMARY
+
+      - name: Manual Upload Fallback Info
+        if: failure()
+        run: |
+          echo "## ⚠️ Manual Distribution Required" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Automated upload failed. You can manually distribute using:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Manual Upload Options" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Diawi**: https://www.diawi.com/" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Firebase Console**: https://console.firebase.google.com/" >> $GITHUB_STEP_SUMMARY
+          echo "3. **TestFlight**: https://appstoreconnect.apple.com/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📁 **IPA File**: Download from GitHub Artifacts in this workflow run" >> $GITHUB_STEP_SUMMARY
