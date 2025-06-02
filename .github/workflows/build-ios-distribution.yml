@@ -39,6 +39,19 @@ jobs:
       - name: Build frontend
         run: bun run build
 
+      # Extract project configuration from Tauri config
+      - name: Extract project configuration
+        run: |
+          # Read bundle ID and app name from Tauri config
+          BUNDLE_ID=$(jq -r '.identifier' src-tauri/tauri.conf.json)
+          APP_NAME=$(jq -r '.productName' src-tauri/tauri.conf.json)
+
+          echo "BUNDLE_ID=$BUNDLE_ID" >> $GITHUB_ENV
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+
+          echo "📋 Detected Bundle ID: $BUNDLE_ID"
+          echo "📋 Detected App Name: $APP_NAME"
+
       # Import distribution certificate
       - name: Setup iOS distribution signing
         id: ios-signing
@@ -112,9 +125,23 @@ jobs:
 
           PBXPROJ_FILE="src-tauri/gen/apple/app.xcodeproj/project.pbxproj"
 
-          # 1. Fix bundle ID from com.jssoftware.ui to software.js.ui
+          # 1. Fix bundle ID to match Tauri configuration
           echo "1️⃣ Fixing bundle ID..."
-          sed -i '' 's/com\.jssoftware\.ui/software.js.ui/g' "$PBXPROJ_FILE"
+
+          # Read current bundle ID from pbxproj file
+          CURRENT_BUNDLE_ID=$(grep -o "PRODUCT_BUNDLE_IDENTIFIER = [^;]*" "$PBXPROJ_FILE" | head -1 | sed 's/PRODUCT_BUNDLE_IDENTIFIER = //')
+          echo "   Current bundle ID in Xcode project: $CURRENT_BUNDLE_ID"
+          echo "   Target bundle ID from Tauri config: ${{ env.BUNDLE_ID }}"
+
+          # Replace current bundle ID with target bundle ID
+          if [ -n "$CURRENT_BUNDLE_ID" ] && [ "$CURRENT_BUNDLE_ID" != "${{ env.BUNDLE_ID }}" ]; then
+            # Escape dots for sed regex
+            ESCAPED_CURRENT=$(echo "$CURRENT_BUNDLE_ID" | sed 's/\./\\./g')
+            sed -i '' "s/$ESCAPED_CURRENT/${{ env.BUNDLE_ID }}/g" "$PBXPROJ_FILE"
+            echo "   ✅ Bundle ID updated successfully"
+          else
+            echo "   ℹ️ Bundle ID already matches or current ID not found"
+          fi
 
           # 2. Switch ALL instances from automatic to manual signing
           echo "2️⃣ Switching to manual signing (comprehensive)..."
@@ -264,7 +291,7 @@ jobs:
             cp -R "$APP_PATH" "$PAYLOAD_DIR/"
             
             # Create IPA
-            IPA_NAME="JS_Software_UI_Distribution.ipa"
+            IPA_NAME="${APP_NAME// /_}_Distribution.ipa"
             cd $(dirname "$PAYLOAD_DIR")
             zip -r "$GITHUB_WORKSPACE/$IPA_NAME" Payload
             
@@ -276,7 +303,7 @@ jobs:
           fi
 
       # Find and upload IPA to Diawi
-      - name: Upload to Diawi
+      - name: Upload to Diawi (Optional)
         run: |
           # Use the manually created IPA
           if [ -z "$IPA_PATH" ]; then
@@ -286,44 +313,51 @@ jobs:
 
           echo "📱 Using IPA: $IPA_PATH"
 
-          # Upload to Diawi
-          echo "🌐 Uploading to Diawi..."
-          RESPONSE=$(curl -w "%{http_code}" -s \
-            -F token="${{ secrets.DIAWI_TOKEN }}" \
-            -F file="@${IPA_PATH}" \
-            -F find_by_udid=1 \
-            -F wall_of_apps=1 \
-            "https://upload.diawi.com/")
-
-          HTTP_CODE="${RESPONSE: -3}"
-          RESPONSE_BODY="${RESPONSE%???}"
-
-          if [ "$HTTP_CODE" -eq 200 ]; then
-            JOB_ID=$(echo "$RESPONSE_BODY" | jq -r '.job')
-            echo "✅ Upload initiated. Job ID: $JOB_ID"
-            
-            # Poll for completion
-            for i in {1..30}; do
-              sleep 10
-              STATUS_RESPONSE=$(curl -s "https://upload.diawi.com/status?token=${{ secrets.DIAWI_TOKEN }}&job=${JOB_ID}")
-              STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
-              
-              if [ "$STATUS" = "2000" ]; then
-                HASH=$(echo "$STATUS_RESPONSE" | jq -r '.hash')
-                echo "🎉 Upload completed!"
-                echo "🔗 Diawi link: https://i.diawi.com/$HASH"
-                echo "DIAWI_LINK=https://i.diawi.com/$HASH" >> $GITHUB_ENV
-                break
-              elif [ "$STATUS" = "4000" ]; then
-                echo "❌ Upload failed: $(echo "$STATUS_RESPONSE" | jq -r '.message')"
-                exit 1
-              fi
-              
-              echo "⏳ Still processing... (attempt $i/30)"
-            done
+          # Check if Diawi token is configured
+          if [ -z "${{ secrets.DIAWI_TOKEN }}" ]; then
+            echo "ℹ️ No Diawi token configured - skipping OTA upload"
+            echo "💡 To enable OTA distribution, add DIAWI_TOKEN secret to your repository"
+            echo "🎉 Build completed successfully! IPA is available as artifact."
           else
-            echo "❌ Upload failed with HTTP $HTTP_CODE: $RESPONSE_BODY"
-            exit 1
+            # Upload to Diawi
+            echo "🌐 Uploading to Diawi..."
+            RESPONSE=$(curl -w "%{http_code}" -s \
+              -F token="${{ secrets.DIAWI_TOKEN }}" \
+              -F file="@${IPA_PATH}" \
+              -F find_by_udid=1 \
+              -F wall_of_apps=1 \
+              "https://upload.diawi.com/")
+
+            HTTP_CODE="${RESPONSE: -3}"
+            RESPONSE_BODY="${RESPONSE%???}"
+
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              JOB_ID=$(echo "$RESPONSE_BODY" | jq -r '.job')
+              echo "✅ Upload initiated. Job ID: $JOB_ID"
+              
+              # Poll for completion
+              for i in {1..30}; do
+                sleep 10
+                STATUS_RESPONSE=$(curl -s "https://upload.diawi.com/status?token=${{ secrets.DIAWI_TOKEN }}&job=${JOB_ID}")
+                STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
+                
+                if [ "$STATUS" = "2000" ]; then
+                  HASH=$(echo "$STATUS_RESPONSE" | jq -r '.hash')
+                  echo "🎉 Upload completed!"
+                  echo "🔗 Diawi link: https://i.diawi.com/$HASH"
+                  echo "DIAWI_LINK=https://i.diawi.com/$HASH" >> $GITHUB_ENV
+                  break
+                elif [ "$STATUS" = "4000" ]; then
+                  echo "❌ Upload failed: $(echo "$STATUS_RESPONSE" | jq -r '.message')"
+                  exit 1
+                fi
+                
+                echo "⏳ Still processing... (attempt $i/30)"
+              done
+            else
+              echo "❌ Upload failed with HTTP $HTTP_CODE: $RESPONSE_BODY"
+              exit 1
+            fi
           fi
 
       # Upload IPA as artifact backup
@@ -338,7 +372,10 @@ jobs:
       - name: Build Summary
         run: |
           echo "🎉 iOS Distribution Build Complete!"
-          echo "📱 Bundle ID: software.js.ui"
+          echo "📱 Bundle ID: ${{ env.BUNDLE_ID }}"
+          echo "📱 App Name: ${{ env.APP_NAME }}"
           echo "🔐 Signed with: iPhone Distribution (DA9798GQ27)"
           echo "📋 Profile: JS Software UI Ad Hoc"
-          echo "🌐 Diawi Link: ${{ env.DIAWI_LINK }}"
+          if [ -n "${{ env.DIAWI_LINK }}" ]; then
+            echo "🌐 Diawi Link: ${{ env.DIAWI_LINK }}"
+          fi
