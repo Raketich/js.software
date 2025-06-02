@@ -62,38 +62,62 @@ jobs:
         working-directory: src-tauri/gen/android/app
         run: |
           echo "Adding signing configuration to build.gradle.kts..."
-          
+
+          # Create Python script to patch build.gradle.kts
+          cat > patch_gradle.py << 'EOF'
+          import re
+
+          # Read the original file
+          with open('build.gradle.kts', 'r') as f:
+              content = f.read()
+
           # Add FileInputStream import if not present
-          if ! grep -q "import java.io.FileInputStream" build.gradle.kts; then
-            sed -i '1i import java.io.FileInputStream' build.gradle.kts
-          fi
-          
+          if 'import java.io.FileInputStream' not in content:
+              content = 'import java.io.FileInputStream\n' + content
+
           # Add signingConfigs block after defaultConfig
-          if ! grep -q "signingConfigs" build.gradle.kts; then
-            sed -i '/versionName = tauriProperties.getProperty/a\\n    signingConfigs {\
-        create("release") {\
-            val keystorePropertiesFile = rootProject.file("keystore.properties")\
-            val keystoreProperties = Properties()\
-            if (keystorePropertiesFile.exists()) {\
-                keystoreProperties.load(FileInputStream(keystorePropertiesFile))\
-                \
-                keyAlias = keystoreProperties["keyAlias"] as String\
-                keyPassword = keystoreProperties["keyPassword"] as String\
-                storeFile = file(keystoreProperties["storeFile"] as String)\
-                storePassword = keystoreProperties["storePassword"] as String\
-            }\
-        }\
-    }' build.gradle.kts
-          fi
-          
+          signing_config = '''
+              signingConfigs {
+                  create("release") {
+                      val keystorePropertiesFile = rootProject.file("keystore.properties")
+                      val keystoreProperties = Properties()
+                      if (keystorePropertiesFile.exists()) {
+                          keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+                          
+                          keyAlias = keystoreProperties["keyAlias"] as String
+                          keyPassword = keystoreProperties["keyPassword"] as String
+                          storeFile = file(keystoreProperties["storeFile"] as String)
+                          storePassword = keystoreProperties["storePassword"] as String
+                      }
+                  }
+              }
+          '''
+
+          # Insert signingConfigs after defaultConfig block
+          if 'signingConfigs' not in content:
+              pattern = r'(versionName = tauriProperties\.getProperty[^\n]*\n\s*})'
+              replacement = r'\1\n' + signing_config
+              content = re.sub(pattern, replacement, content)
+
           # Add signingConfig reference to release buildType
-          if ! grep -A 10 'getByName("release")' build.gradle.kts | grep -q 'signingConfig'; then
-            sed -i '/proguard-android-optimize\.txt/a\            signingConfig = signingConfigs.getByName("release")' build.gradle.kts
-          fi
-          
-          echo "Updated build.gradle.kts with signing configuration"
-          echo "=== Signing-related configuration ==="
-          grep -A 20 -B 5 -E "(signingConfigs|signingConfig)" build.gradle.kts || echo "No signing config found"
+          if 'signingConfig = signingConfigs.getByName("release")' not in content:
+              pattern = r'(proguard-android-optimize\.txt[^\n]*\n[^\n]*\n[^\n]*toTypedArray\(\)\s*\n[^\n]*\))'
+              replacement = r'\1\n            signingConfig = signingConfigs.getByName("release")'
+              content = re.sub(pattern, replacement, content)
+
+          # Write the patched file
+          with open('build.gradle.kts', 'w') as f:
+              f.write(content)
+
+          print("Successfully patched build.gradle.kts")
+          EOF
+
+          # Run the Python script
+          python3 patch_gradle.py
+
+          echo "=== Checking signing configuration ==="
+          grep -A 10 -B 2 "signingConfigs" build.gradle.kts || echo "Signing config not found"
+          grep "signingConfig = signingConfigs" build.gradle.kts || echo "Release signing reference not found"
 
       # Official Tauri Android signing method
       - name: Setup Android signing (Official Tauri Method)
