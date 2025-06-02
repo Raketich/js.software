@@ -1,10 +1,10 @@
 name: Build and Sign Android App
 
 on:
-  # push:
-  #   branches: [ci/tauri-workflows]
-  # pull_request:
-  #   branches: [ci/tauri-workflows]
+  push:
+    branches: [ci/tauri-workflows]
+  pull_request:
+    branches: [ci/tauri-workflows]
   workflow_dispatch:
 
 jobs:
@@ -65,14 +65,17 @@ jobs:
           echo "keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
           echo "storePassword=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
           base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
-          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          echo "storeFile=./js-ui-release.jks" >> keystore.properties
+
+          # Copy keystore to the app directory where Gradle expects it
+          cp $RUNNER_TEMP/keystore.jks ./app/js-ui-release.jks
 
           echo "=== Keystore Properties File ==="
           cat keystore.properties
           echo "=== Keystore File Info ==="
-          ls -la $RUNNER_TEMP/keystore.jks
+          ls -la ./app/js-ui-release.jks
           echo "=== Keystore Content Verification ==="
-          keytool -list -keystore $RUNNER_TEMP/keystore.jks -storepass ${{ secrets.ANDROID_KEY_PASSWORD }} || echo "Failed to verify keystore"
+          keytool -list -keystore ./app/js-ui-release.jks -storepass ${{ secrets.ANDROID_KEY_PASSWORD }} || echo "Failed to verify keystore"
 
       # Build release APK using Tauri with explicit signing
       - name: Build Android app
