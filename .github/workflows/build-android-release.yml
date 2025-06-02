@@ -57,6 +57,44 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.2.9519653
         run: bun run tauri android init
 
+      # Add signing configuration to build.gradle.kts
+      - name: Add signing configuration to build.gradle.kts
+        working-directory: src-tauri/gen/android/app
+        run: |
+          echo "Adding signing configuration to build.gradle.kts..."
+          
+          # Add FileInputStream import if not present
+          if ! grep -q "import java.io.FileInputStream" build.gradle.kts; then
+            sed -i '1i import java.io.FileInputStream' build.gradle.kts
+          fi
+          
+          # Add signingConfigs block after defaultConfig
+          if ! grep -q "signingConfigs" build.gradle.kts; then
+            sed -i '/versionName = tauriProperties.getProperty/a\\n    signingConfigs {\
+        create("release") {\
+            val keystorePropertiesFile = rootProject.file("keystore.properties")\
+            val keystoreProperties = Properties()\
+            if (keystorePropertiesFile.exists()) {\
+                keystoreProperties.load(FileInputStream(keystorePropertiesFile))\
+                \
+                keyAlias = keystoreProperties["keyAlias"] as String\
+                keyPassword = keystoreProperties["keyPassword"] as String\
+                storeFile = file(keystoreProperties["storeFile"] as String)\
+                storePassword = keystoreProperties["storePassword"] as String\
+            }\
+        }\
+    }' build.gradle.kts
+          fi
+          
+          # Add signingConfig reference to release buildType
+          if ! grep -A 10 'getByName("release")' build.gradle.kts | grep -q 'signingConfig'; then
+            sed -i '/proguard-android-optimize\.txt/a\            signingConfig = signingConfigs.getByName("release")' build.gradle.kts
+          fi
+          
+          echo "Updated build.gradle.kts with signing configuration"
+          echo "=== Signing-related configuration ==="
+          grep -A 20 -B 5 -E "(signingConfigs|signingConfig)" build.gradle.kts || echo "No signing config found"
+
       # Official Tauri Android signing method
       - name: Setup Android signing (Official Tauri Method)
         working-directory: src-tauri/gen/android
