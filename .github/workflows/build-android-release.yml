@@ -340,17 +340,59 @@ jobs:
           echo "📏 Size: $(du -h "${{ env.APK_PATH }}" | cut -f1)"
           echo "📏 Size (bytes): $(stat -c%s "${{ env.APK_PATH }}")"
 
-          # Check if APK is signed
-          if aapt dump badging "${{ env.APK_PATH }}" | grep -q "application-label"; then
-            echo "✅ APK appears to be valid"
-          else
-            echo "❌ APK might be invalid or corrupted"
+          # Add Android build-tools to PATH for aapt and apksigner
+          BUILD_TOOLS_PATH="$ANDROID_SDK_ROOT/build-tools"
+          if [ -d "$BUILD_TOOLS_PATH" ]; then
+            # Find the latest build-tools version
+            LATEST_BUILD_TOOLS=$(ls -1 "$BUILD_TOOLS_PATH" | sort -V | tail -n 1)
+            if [ -n "$LATEST_BUILD_TOOLS" ]; then
+              export PATH="$BUILD_TOOLS_PATH/$LATEST_BUILD_TOOLS:$PATH"
+              echo "📱 Using build-tools: $LATEST_BUILD_TOOLS"
+            fi
           fi
 
-          # Try to get more info about signing
+          # Check if APK is valid using aapt (if available)
+          if command -v aapt > /dev/null; then
+            echo "🔍 Validating APK structure with aapt..."
+            if aapt dump badging "${{ env.APK_PATH }}" | grep -q "application-label"; then
+              echo "✅ APK structure is valid"
+              
+              # Extract some useful info
+              PACKAGE_NAME=$(aapt dump badging "${{ env.APK_PATH }}" | grep package | sed "s/.*name='\([^']*\)'.*/\1/")
+              VERSION_NAME=$(aapt dump badging "${{ env.APK_PATH }}" | grep versionName | sed "s/.*versionName='\([^']*\)'.*/\1/")
+              echo "📦 Package: $PACKAGE_NAME"
+              echo "🏷️ Version: $VERSION_NAME"
+            else
+              echo "⚠️ APK structure validation failed"
+            fi
+          else
+            echo "⚠️ aapt not available - skipping APK structure validation"
+          fi
+
+          # Check APK signing using apksigner (if available)  
           if command -v apksigner > /dev/null; then
-            echo "🔐 Signature info:"
-            apksigner verify --verbose "${{ env.APK_PATH }}" || echo "❌ APK is not signed"
+            echo "🔐 Verifying APK signature..."
+            if apksigner verify --verbose "${{ env.APK_PATH }}" 2>/dev/null; then
+              echo "✅ APK is properly signed"
+            else
+              echo "⚠️ APK signature verification failed"
+            fi
+          else
+            echo "⚠️ apksigner not available - skipping signature verification"
+          fi
+
+          # Basic file validation (always works)
+          if [ -f "${{ env.APK_PATH }}" ] && [ -s "${{ env.APK_PATH }}" ]; then
+            echo "✅ APK file exists and is not empty"
+            
+            # Check if it's a ZIP file (APKs are ZIP files)
+            if file "${{ env.APK_PATH }}" | grep -q "Zip archive"; then
+              echo "✅ APK has valid ZIP structure"
+            else
+              echo "⚠️ APK does not appear to be a valid ZIP archive"
+            fi
+          else
+            echo "❌ APK file is missing or empty"
           fi
 
       - name: Upload to Diawi
