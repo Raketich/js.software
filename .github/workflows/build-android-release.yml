@@ -246,6 +246,7 @@ jobs:
           firebase projects:list
 
       - name: Upload to Firebase App Distribution
+        continue-on-error: true
         env:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
