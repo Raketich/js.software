@@ -200,11 +200,17 @@ jobs:
           echo "Bundle ID: ${{ env.BUNDLE_ID }}"
           echo "App Name: ${{ env.APP_NAME }}"
 
-          # Run Tauri build (may fail on export but still create IPA)
+          # Run Tauri build (may fail on export but still create xcarchive)
           echo "🚀 Running Tauri iOS build..."
-          bun tauri ios build --export-method app-store-connect || echo "⚠️ Tauri command failed, but checking for IPA anyway..."
+          BUILD_SUCCESS=false
+          if bun tauri ios build --export-method app-store-connect; then
+            BUILD_SUCCESS=true
+            echo "✅ Tauri build and export completed successfully"
+          else
+            echo "⚠️ Tauri export failed, but checking for xcarchive..."
+          fi
 
-          # Always check for IPA files, regardless of Tauri command success
+          # Always check for IPA files first
           echo "🔍 Searching for IPA files in all locations..."
 
           # Check workspace root first (where xcodebuild exports)
@@ -233,6 +239,88 @@ jobs:
             done
           done
 
+          # If no IPA found, try manual export from xcarchive
+          if [ -z "$FOUND_IPA" ]; then
+            echo "🔍 No IPA found, looking for xcarchive to export manually..."
+            
+            # Find xcarchive
+            XCARCHIVE_PATH=$(find . -name "*.xcarchive" -type d | head -n 1)
+            if [ -n "$XCARCHIVE_PATH" ]; then
+              echo "📦 Found xcarchive: $XCARCHIVE_PATH"
+              
+              # Check xcarchive contents
+              echo "🔍 xcarchive contents:"
+              find "$XCARCHIVE_PATH" -type f -name "*.app" | head -5
+              
+              # Manual export using xcodebuild
+              IPA_NAME="${APP_NAME// /_}_TestFlight.ipa"
+              EXPORT_PATH="$GITHUB_WORKSPACE/export"
+              mkdir -p "$EXPORT_PATH"
+              
+              echo "🔄 Manually exporting IPA from xcarchive..."
+              echo "Archive: $XCARCHIVE_PATH"
+              echo "Export path: $EXPORT_PATH"
+              echo "Export options: $GITHUB_WORKSPACE/exportOptions.plist"
+              
+              # Show export options for debugging
+              echo "📋 Export options content:"
+              cat "$GITHUB_WORKSPACE/exportOptions.plist"
+              
+              if xcodebuild -exportArchive \
+                -archivePath "$XCARCHIVE_PATH" \
+                -exportPath "$EXPORT_PATH" \
+                -exportOptionsPlist "$GITHUB_WORKSPACE/exportOptions.plist" \
+                -verbose; then
+                
+                echo "✅ Manual export succeeded"
+                
+                # Find the exported IPA
+                EXPORTED_IPA=$(find "$EXPORT_PATH" -name "*.ipa" -type f | head -n 1)
+                if [ -n "$EXPORTED_IPA" ]; then
+                  echo "📦 Found exported IPA: $EXPORTED_IPA"
+                  FOUND_IPA="$EXPORTED_IPA"
+                else
+                  echo "❌ No IPA found after export"
+                  echo "🔍 Export directory contents:"
+                  ls -la "$EXPORT_PATH" || echo "Export directory not found"
+                fi
+              else
+                echo "❌ Manual export also failed"
+                echo "🔍 Checking provisioning profile setup..."
+                
+                # Debug provisioning profiles
+                echo "🔍 Installed provisioning profiles:"
+                ls -la ~/Library/MobileDevice/Provisioning\ Profiles/ 2>/dev/null || echo "No provisioning profiles directory"
+                
+                # Check if our profile is there
+                if [ -n "${{ env.PROFILE_UUID }}" ]; then
+                  PROFILE_FILE=~/Library/MobileDevice/Provisioning\ Profiles/${{ env.PROFILE_UUID }}.mobileprovision
+                  if [ -f "$PROFILE_FILE" ]; then
+                    echo "✅ Our profile exists: $PROFILE_FILE"
+                    echo "🔍 Profile info:"
+                    security cms -D -i "$PROFILE_FILE" | head -20
+                  else
+                    echo "❌ Our profile missing: $PROFILE_FILE"
+                  fi
+                else
+                  echo "❌ PROFILE_UUID is empty - provisioning profile step failed"
+                fi
+                
+                # Check certificates
+                echo "🔍 Available certificates:"
+                security find-identity -p codesigning -v
+                
+                exit 1
+              fi
+            else
+              echo "❌ No xcarchive found either"
+              echo "🔍 Looking for any build artifacts:"
+              find . -type f -name "*" | grep -E "\.(app|xcarchive)$" || echo "No iOS build artifacts found"
+              exit 1
+            fi
+          fi
+
+          # If we found an IPA, prepare it
           if [ -n "$FOUND_IPA" ]; then
             echo "✅ IPA found at: $FOUND_IPA"
             echo "📏 IPA size: $(ls -lh "$FOUND_IPA" | awk '{print $5}')"
@@ -256,13 +344,7 @@ jobs:
               exit 1
             fi
           else
-            echo "❌ No IPA file found anywhere!"
-            echo "🔍 Full directory scan:"
-            find "$GITHUB_WORKSPACE" -type f -name "*" | grep -i ipa || echo "No files containing 'ipa' found"
-            echo "🔍 Workspace contents:"
-            ls -la "$GITHUB_WORKSPACE"
-            echo "🔍 src-tauri contents:"
-            ls -la .
+            echo "❌ No IPA could be created or found!"
             exit 1
           fi
 
