@@ -195,68 +195,99 @@ jobs:
         run: |
           cd src-tauri
 
-          # Try regular build first, if it fails due to export, we'll handle it
-          if bun tauri ios build --export-method app-store-connect; then
-            # Find the generated IPA
-            IPA_PATH=$(find . -name "*.ipa" -type f | head -n 1)
-            if [ -n "$IPA_PATH" ]; then
-              # Copy to workspace root with consistent name
-              IPA_NAME="${APP_NAME// /_}_TestFlight.ipa"
-              cp "$IPA_PATH" "$GITHUB_WORKSPACE/$IPA_NAME"
-              echo "IPA_PATH=$GITHUB_WORKSPACE/$IPA_NAME" >> $GITHUB_ENV
+          echo "🔨 Starting Tauri iOS build..."
+          echo "Working directory: $(pwd)"
+          echo "Bundle ID: ${{ env.BUNDLE_ID }}"
+          echo "App Name: ${{ env.APP_NAME }}"
+
+          # Run Tauri build (may fail on export but still create IPA)
+          echo "🚀 Running Tauri iOS build..."
+          bun tauri ios build --export-method app-store-connect || echo "⚠️ Tauri command failed, but checking for IPA anyway..."
+
+          # Always check for IPA files, regardless of Tauri command success
+          echo "🔍 Searching for IPA files in all locations..."
+
+          # Check workspace root first (where xcodebuild exports)
+          find "$GITHUB_WORKSPACE" -name "*.ipa" -type f -exec ls -la {} \; 2>/dev/null || echo "No IPA in workspace root"
+
+          # Check src-tauri directory
+          find . -name "*.ipa" -type f -exec ls -la {} \; 2>/dev/null || echo "No IPA in src-tauri"
+
+          # Look for IPA in common locations
+          IPA_LOCATIONS=(
+            "$GITHUB_WORKSPACE/*.ipa"
+            "./*.ipa"
+            "./target/*.ipa"
+            "./gen/apple/*.ipa"
+            "../*.ipa"
+          )
+
+          FOUND_IPA=""
+          for pattern in "${IPA_LOCATIONS[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                FOUND_IPA="$file"
+                echo "📦 Found IPA: $FOUND_IPA"
+                break 2
+              fi
+            done
+          done
+
+          if [ -n "$FOUND_IPA" ]; then
+            echo "✅ IPA found at: $FOUND_IPA"
+            echo "📏 IPA size: $(ls -lh "$FOUND_IPA" | awk '{print $5}')"
+            
+            # Copy to consistent location if needed
+            IPA_NAME="${APP_NAME// /_}_TestFlight.ipa"
+            TARGET_PATH="$GITHUB_WORKSPACE/$IPA_NAME"
+            
+            if [ "$FOUND_IPA" != "$TARGET_PATH" ]; then
+              echo "📋 Copying IPA to: $TARGET_PATH"
+              cp "$FOUND_IPA" "$TARGET_PATH"
             fi
-          else
-            # Tauri export failed, creating IPA manually from built .app
-            APP_PATH=$(find gen/apple -name "*.app" -type d | head -n 1)
-            if [ -z "$APP_PATH" ]; then
-              echo "❌ No .app file found!"
+            
+            # Verify final IPA
+            if [ -f "$TARGET_PATH" ]; then
+              echo "✅ Final IPA ready: $TARGET_PATH"
+              echo "📏 Final size: $(ls -lh "$TARGET_PATH" | awk '{print $5}')"
+              echo "IPA_PATH=$TARGET_PATH" >> $GITHUB_ENV
+            else
+              echo "❌ Failed to prepare final IPA"
               exit 1
             fi
-            
-            # Create archive first
-            ARCHIVE_PATH=$(mktemp -d)/app.xcarchive
-            mkdir -p "$ARCHIVE_PATH/Products/Applications"
-            cp -R "$APP_PATH" "$ARCHIVE_PATH/Products/Applications/"
-            
-            # Create Info.plist for archive
-            cat > "$ARCHIVE_PATH/Info.plist" << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>ApplicationProperties</key>
-              <dict>
-                  <key>ApplicationPath</key>
-                  <string>Applications/$(basename "$APP_PATH")</string>
-                  <key>CFBundleIdentifier</key>
-                  <string>${{ env.BUNDLE_ID }}</string>
-                  <key>CFBundleShortVersionString</key>
-                  <string>1.0.0</string>
-                  <key>CFBundleVersion</key>
-                  <string>1.0.${{ github.run_number }}</string>
-              </dict>
-              <key>ArchiveVersion</key>
-              <integer>2</integer>
-              <key>CreationDate</key>
-              <date>$(date -u +"%Y-%m-%dT%H:%M:%SZ")</date>
-              <key>Name</key>
-              <string>${{ env.APP_NAME }}</string>
-              <key>SchemeName</key>
-              <string>${{ env.APP_NAME }}</string>
-          </dict>
-          </plist>
-          EOF
-            
-            # Export IPA from archive
-            IPA_NAME="${APP_NAME// /_}_TestFlight.ipa"
-            xcodebuild -exportArchive \
-              -archivePath "$ARCHIVE_PATH" \
-              -exportPath "$(dirname "$GITHUB_WORKSPACE/$IPA_NAME")" \
-              -exportOptionsPlist "$GITHUB_WORKSPACE/exportOptions.plist"
-              
-            # Store IPA path for later steps
-            echo "IPA_PATH=$GITHUB_WORKSPACE/$IPA_NAME" >> $GITHUB_ENV
+          else
+            echo "❌ No IPA file found anywhere!"
+            echo "🔍 Full directory scan:"
+            find "$GITHUB_WORKSPACE" -type f -name "*" | grep -i ipa || echo "No files containing 'ipa' found"
+            echo "🔍 Workspace contents:"
+            ls -la "$GITHUB_WORKSPACE"
+            echo "🔍 src-tauri contents:"
+            ls -la .
+            exit 1
           fi
+
+      # Verify IPA before upload
+      - name: Verify IPA before upload
+        run: |
+          echo "🔍 Verifying IPA file before upload..."
+
+          if [ -z "${{ env.IPA_PATH }}" ]; then
+            echo "❌ IPA_PATH environment variable is not set"
+            exit 1
+          fi
+
+          if [ ! -f "${{ env.IPA_PATH }}" ]; then
+            echo "❌ IPA file not found at: ${{ env.IPA_PATH }}"
+            echo "🔍 Workspace contents:"
+            ls -la "$GITHUB_WORKSPACE"
+            echo "🔍 Looking for any IPA files:"
+            find "$GITHUB_WORKSPACE" -name "*.ipa" -type f -exec ls -la {} \; || echo "No IPA files found"
+            exit 1
+          fi
+
+          echo "✅ IPA file verified: ${{ env.IPA_PATH }}"
+          echo "📏 File size: $(ls -lh "${{ env.IPA_PATH }}" | awk '{print $5}')"
+          echo "🔐 File permissions: $(ls -l "${{ env.IPA_PATH }}" | awk '{print $1}')"
 
       # Setup App Store Connect API authentication
       - name: Setup App Store Connect API
