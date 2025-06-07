@@ -1,0 +1,324 @@
+name: Build iOS TestFlight Distribution
+
+on:
+  push:
+    branches: [ci/tauri-workflows]
+  pull_request:
+    branches: [ci/tauri-workflows]
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: "Release notes for TestFlight"
+        required: false
+        default: ""
+
+jobs:
+  build-ios-testflight:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install iOS Dependencies
+        run: rustup target add aarch64-apple-ios
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build frontend
+        run: bun run build
+
+      # Extract project configuration from Tauri config
+      - name: Extract project configuration
+        run: |
+          # Read bundle ID and app name from Tauri config
+          BUNDLE_ID=$(jq -r '.identifier' src-tauri/tauri.conf.json)
+          APP_NAME=$(jq -r '.productName' src-tauri/tauri.conf.json)
+
+          echo "BUNDLE_ID=$BUNDLE_ID" >> $GITHUB_ENV
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+
+          echo "📋 Detected Bundle ID: $BUNDLE_ID"
+          echo "📋 Detected App Name: $APP_NAME"
+
+      # Import App Store distribution certificate
+      - name: Setup iOS App Store signing
+        id: ios-signing
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.IOS_APPSTORE_CERTIFICATE }}
+          p12-password: ${{ secrets.IOS_APPSTORE_CERTIFICATE_PASSWORD }}
+          keychain-password: ${{ github.run_id }}
+          create-keychain: true
+
+      # Install App Store provisioning profile
+      - name: Install App Store provisioning profile
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo -n "${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE }}" | base64 --decode > appstore.mobileprovision
+
+          # Extract UUID from provisioning profile for proper naming
+          PROFILE_UUID=$(security cms -D -i appstore.mobileprovision | plutil -extract UUID xml1 - -o - | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+
+          # Install with proper UUID naming
+          cp appstore.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
+
+          # Clean up
+          rm appstore.mobileprovision
+
+      # Add iOS team configuration to Tauri config
+      - name: Add iOS section with developmentTeam
+        run: |
+          if grep -q '"iOS": {' src-tauri/tauri.conf.json; then
+            sed -i '' 's/"developmentTeam": "[^"]*"/"developmentTeam": "${{ secrets.APPLE_TEAM_ID }}"/' src-tauri/tauri.conf.json
+          else
+            jq '.bundle.iOS = {"developmentTeam": "${{ secrets.APPLE_TEAM_ID }}"}' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          fi
+
+      # Initialize Tauri iOS project
+      - name: Initialize Tauri iOS
+        run: bun run tauri ios init
+
+      # Apply App Store signing fixes
+      - name: Apply App Store signing fixes
+        run: |
+          PBXPROJ_FILE="src-tauri/gen/apple/app.xcodeproj/project.pbxproj"
+
+          # Fix bundle ID to match Tauri configuration
+          CURRENT_BUNDLE_ID=$(grep -o "PRODUCT_BUNDLE_IDENTIFIER = [^;]*" "$PBXPROJ_FILE" | head -1 | sed 's/PRODUCT_BUNDLE_IDENTIFIER = //')
+          if [ -n "$CURRENT_BUNDLE_ID" ] && [ "$CURRENT_BUNDLE_ID" != "${{ env.BUNDLE_ID }}" ]; then
+            ESCAPED_CURRENT=$(echo "$CURRENT_BUNDLE_ID" | sed 's/\./\\./g')
+            sed -i '' "s/$ESCAPED_CURRENT/${{ env.BUNDLE_ID }}/g" "$PBXPROJ_FILE"
+          fi
+
+          # Switch to manual signing
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBXPROJ_FILE"
+          sed -i '' 's/"CODE_SIGN_STYLE\[sdk=iphoneos\*\]" = Automatic;/"CODE_SIGN_STYLE[sdk=iphoneos*]" = Manual;/g' "$PBXPROJ_FILE"
+          sed -i '' 's/ProvisioningStyle = Automatic;/ProvisioningStyle = Manual;/g' "$PBXPROJ_FILE"
+
+          # Set App Store code sign identity
+          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = "iPhone Developer";/"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";/g' "$PBXPROJ_FILE"
+          sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "Apple Distribution";/g' "$PBXPROJ_FILE"
+          sed -i '' 's/"iPhone Developer"/"Apple Distribution"/g' "$PBXPROJ_FILE"
+          sed -i '' 's/"iPhone Distribution"/"Apple Distribution"/g' "$PBXPROJ_FILE"
+
+          # Set development team
+          sed -i '' 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "${{ secrets.APPLE_TEAM_ID }}";/g' "$PBXPROJ_FILE"
+          if ! grep -q "DEVELOPMENT_TEAM" "$PBXPROJ_FILE"; then
+            sed -i '' '/CODE_SIGN_IDENTITY.*Apple Distribution/a\
+          				DEVELOPMENT_TEAM = "${{ secrets.APPLE_TEAM_ID }}";' "$PBXPROJ_FILE"
+          fi
+
+          # Add provisioning profile specifier
+          sed -i '' '/PROVISIONING_PROFILE_SPECIFIER/d' "$PBXPROJ_FILE"
+          sed -i '' '/CODE_SIGN_IDENTITY.*Apple Distribution/a\
+          				PROVISIONING_PROFILE_SPECIFIER = "'$PROFILE_UUID'";' "$PBXPROJ_FILE"
+
+          # Remove old provisioning profile settings
+          sed -i '' '/PROVISIONING_PROFILE = /d' "$PBXPROJ_FILE"
+
+      # Create export options for App Store
+      - name: Create exportOptions.plist
+        run: |
+          cat > exportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>uploadBitcode</key>
+              <false/>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>${{ env.BUNDLE_ID }}</key>
+                  <string>${PROFILE_UUID}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          # Copy to multiple locations where Tauri might look for it
+          cp exportOptions.plist src-tauri/
+          cp exportOptions.plist src-tauri/gen/apple/
+          mkdir -p src-tauri/gen/apple/app.xcodeproj
+          cp exportOptions.plist src-tauri/gen/apple/app.xcodeproj/
+
+      # Build for App Store
+      - name: Build iOS app for App Store
+        env:
+          DEVELOPER_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd src-tauri
+
+          # Try regular build first, if it fails due to export, we'll handle it
+          if bun tauri ios build --export-method release; then
+            # Find the generated IPA
+            IPA_PATH=$(find . -name "*.ipa" -type f | head -n 1)
+            if [ -n "$IPA_PATH" ]; then
+              # Copy to workspace root with consistent name
+              IPA_NAME="${APP_NAME// /_}_TestFlight.ipa"
+              cp "$IPA_PATH" "$GITHUB_WORKSPACE/$IPA_NAME"
+              echo "IPA_PATH=$GITHUB_WORKSPACE/$IPA_NAME" >> $GITHUB_ENV
+            fi
+          else
+            # Tauri export failed, creating IPA manually from built .app
+            APP_PATH=$(find gen/apple -name "*.app" -type d | head -n 1)
+            if [ -z "$APP_PATH" ]; then
+              echo "❌ No .app file found!"
+              exit 1
+            fi
+            
+            # Create archive first
+            ARCHIVE_PATH=$(mktemp -d)/app.xcarchive
+            mkdir -p "$ARCHIVE_PATH/Products/Applications"
+            cp -R "$APP_PATH" "$ARCHIVE_PATH/Products/Applications/"
+            
+            # Create Info.plist for archive
+            cat > "$ARCHIVE_PATH/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>ApplicationProperties</key>
+              <dict>
+                  <key>ApplicationPath</key>
+                  <string>Applications/$(basename "$APP_PATH")</string>
+                  <key>CFBundleIdentifier</key>
+                  <string>${{ env.BUNDLE_ID }}</string>
+                  <key>CFBundleShortVersionString</key>
+                  <string>1.0.0</string>
+                  <key>CFBundleVersion</key>
+                  <string>1.0.${{ github.run_number }}</string>
+              </dict>
+              <key>ArchiveVersion</key>
+              <integer>2</integer>
+              <key>CreationDate</key>
+              <date>$(date -u +"%Y-%m-%dT%H:%M:%SZ")</date>
+              <key>Name</key>
+              <string>${{ env.APP_NAME }}</string>
+              <key>SchemeName</key>
+              <string>${{ env.APP_NAME }}</string>
+          </dict>
+          </plist>
+          EOF
+            
+            # Export IPA from archive
+            IPA_NAME="${APP_NAME// /_}_TestFlight.ipa"
+            xcodebuild -exportArchive \
+              -archivePath "$ARCHIVE_PATH" \
+              -exportPath "$(dirname "$GITHUB_WORKSPACE/$IPA_NAME")" \
+              -exportOptionsPlist "$GITHUB_WORKSPACE/exportOptions.plist"
+              
+            # Store IPA path for later steps
+            echo "IPA_PATH=$GITHUB_WORKSPACE/$IPA_NAME" >> $GITHUB_ENV
+          fi
+
+      # Setup App Store Connect API authentication
+      - name: Setup App Store Connect API
+        run: |
+          # Create API key file from secret
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.APP_STORE_CONNECT_API_KEY }}" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+
+          # Set permissions
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+
+      # Upload to TestFlight
+      - name: Upload to TestFlight
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          # Generate release notes
+          CUSTOM_NOTES="${{ github.event.inputs.release_notes }}"
+          if [ -n "$CUSTOM_NOTES" ]; then
+            RELEASE_NOTES="$CUSTOM_NOTES"
+          else
+            RELEASE_NOTES="🚀 New ${{ env.APP_NAME }} iOS Build - Version 1.0.${{ github.run_number }}
+
+          📱 Built from: ${{ github.ref_name }}
+          🔗 Commit: ${{ github.sha }}
+          👤 Author: ${{ github.actor }}
+
+          📝 Changes in this build:
+          ${{ github.event.head_commit.message }}
+
+          💾 Download from TestFlight to test the latest features!"
+          fi
+
+          # Create temporary file for release notes
+          echo "$RELEASE_NOTES" > /tmp/release_notes.txt
+
+          # Upload to TestFlight using xcrun altool
+          xcrun altool --upload-app \
+            --type ios \
+            --file "${{ env.IPA_PATH }}" \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+            --verbose
+
+          echo "🎉 Successfully uploaded to TestFlight!"
+          echo "📱 Build will be available for internal testing once processed by Apple"
+
+          # Note: Release notes are set separately in App Store Connect after upload
+          echo "💡 To add release notes, go to App Store Connect → TestFlight → Build → What to Test"
+
+      # Add internal testers (if configured)
+      - name: Notify internal testers
+        continue-on-error: true
+        run: |
+          if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
+            echo "📧 Internal testers configured: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}"
+            echo "🔄 Testers will be automatically notified when build is processed"
+            echo "⏱️  Processing usually takes 5-15 minutes"
+          else
+            echo "ℹ️ No internal testers configured via TESTFLIGHT_INTERNAL_TESTERS variable"
+            echo "💡 Add testers manually in App Store Connect → TestFlight → Internal Testing"
+          fi
+
+      # Clean up API key
+      - name: Clean up API key
+        if: always()
+        run: |
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+
+      # Upload IPA as artifact backup
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-testflight-ipa
+          path: ${{ env.IPA_PATH }}
+          retention-days: 7
+
+      # Build Summary
+      - name: Build Summary
+        run: |
+          echo "🎉 iOS TestFlight Build Complete!"
+          echo "📱 Bundle ID: ${{ env.BUNDLE_ID }}"
+          echo "📱 App Name: ${{ env.APP_NAME }}"
+          echo "🔐 Signed with: Apple Distribution (${{ secrets.APPLE_TEAM_ID }})"
+          echo "✈️ Uploaded to TestFlight"
+          echo "⏱️ Build will be available for internal testing in 5-15 minutes"
+          echo "🔗 Check status: https://appstoreconnect.apple.com/apps"
