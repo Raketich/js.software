@@ -73,12 +73,35 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo -n "${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE }}" | base64 --decode > appstore.mobileprovision
 
+          # Verify the provisioning profile was decoded properly
+          if [ ! -s appstore.mobileprovision ]; then
+            echo "❌ Failed to decode provisioning profile - check IOS_APPSTORE_PROVISIONING_PROFILE secret"
+            exit 1
+          fi
+
           # Extract UUID from provisioning profile for proper naming
           PROFILE_UUID=$(security cms -D -i appstore.mobileprovision | plutil -extract UUID xml1 - -o - | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
+
+          if [ -z "$PROFILE_UUID" ]; then
+            echo "❌ Failed to extract UUID from provisioning profile"
+            echo "Profile content preview:"
+            head -20 appstore.mobileprovision
+            exit 1
+          fi
+
           echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+          echo "📋 Extracted Profile UUID: $PROFILE_UUID"
 
           # Install with proper UUID naming
           cp appstore.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
+
+          # Verify installation
+          if [ -f ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision ]; then
+            echo "✅ Provisioning profile installed successfully"
+          else
+            echo "❌ Failed to install provisioning profile"
+            exit 1
+          fi
 
           # Clean up
           rm appstore.mobileprovision
@@ -173,7 +196,7 @@ jobs:
           cd src-tauri
 
           # Try regular build first, if it fails due to export, we'll handle it
-          if bun tauri ios build --export-method release; then
+          if bun tauri ios build --export-method app-store-connect; then
             # Find the generated IPA
             IPA_PATH=$(find . -name "*.ipa" -type f | head -n 1)
             if [ -n "$IPA_PATH" ]; then
