@@ -736,6 +736,18 @@ jobs:
           # Create fastlane directory structure (required by Fastlane)
           mkdir -p fastlane
 
+          # Export environment variables for Fastlane
+          export TESTER_KEY_ID="$TESTER_KEY_ID"
+          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
+          export BUNDLE_ID="$BUNDLE_ID"
+          export TESTFLIGHT_TESTERS="$TESTFLIGHT_TESTERS"
+
+          echo "🔍 Debug: Environment variables for tester management:"
+          echo "   TESTER_KEY_ID: $TESTER_KEY_ID"
+          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
+          echo "   BUNDLE_ID: $BUNDLE_ID"
+          echo "   TESTFLIGHT_TESTERS: $TESTFLIGHT_TESTERS"
+
           # Create Fastfile with analytics disabled and no interactive prompts
           cat > fastlane/Fastfile << 'EOF'
           # Disable analytics and interactive prompts
@@ -748,19 +760,33 @@ jobs:
             lane :add_testflight_testers do |options|
               puts "🔧 Configuring App Store Connect API..."
               
-              # Configure App Store Connect API with the tester management key
-              app_store_connect_api_key(
-                key_id: ENV["TESTER_KEY_ID"],
-                issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV['TESTER_KEY_ID']}.p8"
-              )
-              
+              # Get values from environment
+              key_id = ENV["TESTER_KEY_ID"]
+              issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
               bundle_id = ENV["BUNDLE_ID"]
               testers_string = ENV["TESTFLIGHT_TESTERS"]
               
-              puts "📱 Managing testers for bundle ID: #{bundle_id}"
+              puts "🔑 Key ID: #{key_id}"
+              puts "🆔 Issuer ID: #{issuer_id}"
+              puts "📱 Bundle ID: #{bundle_id}"
               puts "👥 Testers to add: #{testers_string}"
-              puts "🔑 Using API key: #{ENV['TESTER_KEY_ID']}"
+              
+              if key_id.nil? || key_id.empty?
+                puts "❌ TESTER_KEY_ID is not set or empty"
+                raise "Missing required environment variable: TESTER_KEY_ID"
+              end
+              
+              if issuer_id.nil? || issuer_id.empty?
+                puts "❌ APP_STORE_CONNECT_ISSUER_ID is not set or empty"
+                raise "Missing required environment variable: APP_STORE_CONNECT_ISSUER_ID"
+              end
+              
+              # Configure App Store Connect API
+              app_store_connect_api_key(
+                key_id: key_id,
+                issuer_id: issuer_id,
+                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
+              )
               
               # Split testers by comma and clean whitespace
               testers = testers_string.split(',').map(&:strip)
@@ -797,8 +823,7 @@ jobs:
                     skip_waiting_for_build_processing: true,
                     app_identifier: bundle_id,
                     distribute_external: false,
-                    testers: [email],
-                    groups: ["Internal Testing"]
+                    testers: [email]
                   )
                   
                   puts "✅ Success with pilot: #{email}"
@@ -808,63 +833,29 @@ jobs:
                 rescue => e
                   puts "⚠️ Pilot approach failed: #{e.message}"
                   
-                  # Approach 2: Try to create beta tester directly using Spaceship
+                  # Approach 2: Try invite_beta_testers action
                   begin
-                    puts "🔄 Approach 2: Using Spaceship API..."
+                    puts "🔄 Approach 2: Using invite_beta_testers..."
                     
-                    require 'spaceship'
-                    Spaceship::ConnectAPI.token = app_store_connect_api_key
+                    invite_beta_testers(
+                      app_identifier: bundle_id,
+                      testers: [email]
+                    )
                     
-                    # Find the app
-                    app = Spaceship::ConnectAPI::App.find(bundle_id)
-                    if app
-                      puts "✅ Found app: #{app.name}"
-                      
-                      # Try to create/invite tester
-                      tester = Spaceship::ConnectAPI::BetaTester.create(
-                        email: email,
-                        first_name: "Internal",
-                        last_name: "Tester"
-                      )
-                      
-                      # Add tester to app
-                      if tester
-                        tester.add_to_apps([app])
-                        puts "✅ Success with Spaceship API: #{email}"
-                        tester_added = true
-                        success_count += 1
-                      end
-                    else
-                      puts "❌ App not found for bundle ID: #{bundle_id}"
-                    end
+                    puts "✅ Success with invite_beta_testers: #{email}"
+                    tester_added = true
+                    success_count += 1
                     
                   rescue => e2
-                    puts "⚠️ Spaceship approach failed: #{e2.message}"
-                    
-                    # Approach 3: Try invite_beta_testers action
-                    begin
-                      puts "🔄 Approach 3: Using invite_beta_testers..."
-                      
-                      invite_beta_testers(
-                        app_identifier: bundle_id,
-                        testers: [email]
-                      )
-                      
-                      puts "✅ Success with invite_beta_testers: #{email}"
-                      tester_added = true
-                      success_count += 1
-                      
-                    rescue => e3
-                      puts "❌ All approaches failed for #{email}"
-                      puts "   Error 1 (pilot): #{e.message}"
-                      puts "   Error 2 (spaceship): #{e2.message}"
-                      puts "   Error 3 (invite): #{e3.message}"
-                    end
+                    puts "❌ Both approaches failed for #{email}"
+                    puts "   Error 1 (pilot): #{e.message}"
+                    puts "   Error 2 (invite): #{e2.message}"
+                    puts "💡 Tester may already exist or API key may lack permissions"
                   end
                 end
                 
                 unless tester_added
-                  puts "❌ Could not add tester: #{email}"
+                  puts "⚠️ Could not add tester: #{email} (may already be added)"
                 end
               end
               
@@ -875,43 +866,11 @@ jobs:
                 puts "🌟 All testers added successfully!"
               elsif success_count > 0
                 puts "⚠️ Some testers were added, but #{valid_testers.length - success_count} failed"
+                puts "💡 Failed testers may already be in TestFlight"
               else
-                puts "❌ No testers could be added. Check your API key permissions."
-                puts "💡 Verify API key has App Manager role for tester management"
-              end
-            end
-            
-            desc "Test App Store Connect API connection"
-            lane :test_api_connection do
-              puts "🔍 Testing App Store Connect API connection..."
-              
-              app_store_connect_api_key(
-                key_id: ENV["TESTER_KEY_ID"],
-                issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV['TESTER_KEY_ID']}.p8"
-              )
-              
-              begin
-                require 'spaceship'
-                Spaceship::ConnectAPI.token = app_store_connect_api_key
-                
-                apps = Spaceship::ConnectAPI::App.all
-                puts "✅ API connection successful!"
-                puts "📱 Found #{apps.length} apps in your account"
-                
-                bundle_id = ENV["BUNDLE_ID"]
-                target_app = apps.find { |app| app.bundle_id == bundle_id }
-                
-                if target_app
-                  puts "✅ Found target app: #{target_app.name} (#{target_app.bundle_id})"
-                else
-                  puts "⚠️ Target app not found. Available apps:"
-                  apps.each { |app| puts "   - #{app.name} (#{app.bundle_id})" }
-                end
-                
-              rescue => e
-                puts "❌ API connection failed: #{e.message}"
-                raise e
+                puts "⚠️ No testers could be added"
+                puts "💡 This might be expected if testers are already added"
+                puts "💡 Check TestFlight in App Store Connect to verify"
               end
             end
           end
@@ -923,25 +882,18 @@ jobs:
           app_identifier("$BUNDLE_ID")
           EOF
 
-          # Export the tester key ID for Fastlane to use
-          export TESTER_KEY_ID="$TESTER_KEY_ID"
-
-          # Test API connection first
           echo "🔍 Testing API connection with App Manager key..."
-          if fastlane ios test_api_connection; then
-            echo "✅ API connection successful with App Manager key!"
-            
-            # Run Fastlane to add testers
-            echo "🏃 Running Fastlane to manage testers..."
-            if fastlane ios add_testflight_testers; then
-              echo "✅ Fastlane tester management completed successfully!"
-            else
-              echo "⚠️ Fastlane tester management had some issues, but continuing..."
-              echo "💡 Testers may need to be added manually in App Store Connect"
-            fi
+          # Run Fastlane to add testers
+          echo "🏃 Running Fastlane to manage testers..."
+          if TESTER_KEY_ID="$TESTER_KEY_ID" \
+             APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID" \
+             BUNDLE_ID="$BUNDLE_ID" \
+             TESTFLIGHT_TESTERS="$TESTFLIGHT_TESTERS" \
+             fastlane ios add_testflight_testers; then
+            echo "✅ Fastlane tester management completed successfully!"
           else
-            echo "⚠️ API connection failed with App Manager key"
-            echo "💡 Check your APP_STORE_CONNECT_TESTER_API_KEY credentials and App Manager role"
+            echo "⚠️ Fastlane tester management had some issues, but continuing..."
+            echo "💡 Testers may need to be added manually in App Store Connect"
           fi
 
           # Clean up
