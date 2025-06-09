@@ -530,11 +530,29 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
+          APP_STORE_CONNECT_TESTER_API_KEY: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}
         run: |
           echo "🔧 Managing TestFlight Internal Testers..."
 
-          # Determine which API key to use for tester management
+          # Debug: Check available secrets
+          echo "🔍 Debug: Checking available secrets..."
+          echo "  APP_STORE_CONNECT_API_KEY_ID: ${APP_STORE_CONNECT_API_KEY_ID:0:10}... (${#APP_STORE_CONNECT_API_KEY_ID} chars)"
+          echo "  APP_STORE_CONNECT_ISSUER_ID: ${APP_STORE_CONNECT_ISSUER_ID:0:10}... (${#APP_STORE_CONNECT_ISSUER_ID} chars)"
+
           if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
+            echo "  APP_STORE_CONNECT_TESTER_API_KEY_ID: ${APP_STORE_CONNECT_TESTER_API_KEY_ID:0:10}... (${#APP_STORE_CONNECT_TESTER_API_KEY_ID} chars)"
+          else
+            echo "  APP_STORE_CONNECT_TESTER_API_KEY_ID: NOT SET"
+          fi
+
+          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
+            echo "  APP_STORE_CONNECT_TESTER_API_KEY: [PRESENT] (${#APP_STORE_CONNECT_TESTER_API_KEY} chars)"
+          else
+            echo "  APP_STORE_CONNECT_TESTER_API_KEY: NOT SET"
+          fi
+
+          # Determine which API key to use for tester management
+          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] && [ -n "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
             TESTER_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
             echo "🔑 Using dedicated App Manager key for tester management"
           else
