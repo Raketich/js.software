@@ -72,6 +72,8 @@ jobs:
             desc "Validate App Store Connect API for tester management"
             lane :validate_tester_api do
               puts "🔍 Validating App Store Connect API for tester management..."
+              puts "🔑 Key ID: #{ENV['APP_STORE_CONNECT_TESTER_API_KEY_ID']}"
+              puts "🆔 Issuer ID: #{ENV['APP_STORE_CONNECT_ISSUER_ID']}"
               
               # Configure App Store Connect API
               app_store_connect_api_key(
@@ -129,6 +131,16 @@ jobs:
           cat > fastlane/Appfile << EOF
           app_identifier("$BUNDLE_ID")
           EOF
+
+          # Export environment variables for Fastlane
+          export APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
+          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
+          export BUNDLE_ID="$BUNDLE_ID"
+
+          echo "🔍 Debug: Environment variables:"
+          echo "   APP_STORE_CONNECT_TESTER_API_KEY_ID: $APP_STORE_CONNECT_TESTER_API_KEY_ID"
+          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
+          echo "   BUNDLE_ID: $BUNDLE_ID"
 
           # Run validation
           echo "🚀 Running API validation..."
