@@ -595,25 +595,33 @@ jobs:
             echo "🔍 Making API call: $method $endpoint"
             
             local response
+            local curl_exit_code
+            
+            # Temporarily disable exit on error for curl
+            set +e
             if [ -n "$data" ]; then
               response=$(curl -w "HTTP_CODE:%{http_code}" -s -X "$method" \
                 -H "Authorization: Bearer $jwt_token" \
                 -H "Content-Type: application/json" \
                 -d "$data" \
-                "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>/dev/null)
+                "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>&1)
+              curl_exit_code=$?
             else
               response=$(curl -w "HTTP_CODE:%{http_code}" -s -X "$method" \
                 -H "Authorization: Bearer $jwt_token" \
-                "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>/dev/null)
+                "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>&1)
+              curl_exit_code=$?
             fi
+            set -e
             
             # Check if curl failed completely
-            if [ $? -ne 0 ] || [ -z "$response" ]; then
-              echo "❌ curl command failed completely"
+            if [ $curl_exit_code -ne 0 ] || [ -z "$response" ]; then
+              echo "❌ curl command failed completely (exit code: $curl_exit_code)"
               echo "🔍 Debug info:"
               echo "  Method: $method"
               echo "  Endpoint: $endpoint"
               echo "  JWT token length: ${#jwt_token}"
+              echo "  Response: $response"
               return 1
             fi
             
@@ -719,9 +727,13 @@ jobs:
           echo "🔍 Debug: Bundle ID = '$BUNDLE_ID'"
           echo "🔍 Debug: API endpoint = 'apps?filter[bundleId]=$BUNDLE_ID'"
 
+          # Disable exit on error temporarily for this API call
+          set +e
           APPS_RESPONSE=$(make_api_call "GET" "apps?filter[bundleId]=$BUNDLE_ID")
+          API_CALL_RESULT=$?
+          set -e
 
-          if [ $? -ne 0 ]; then
+          if [ $API_CALL_RESULT -ne 0 ]; then
             echo "❌ Failed to fetch apps from App Store Connect"
             echo "🔍 Debug info:"
             echo "  Bundle ID: $BUNDLE_ID"
@@ -730,8 +742,12 @@ jobs:
             
             # Try to fetch all apps to see what's available
             echo "🔍 Attempting to fetch all apps for debugging..."
+            set +e
             ALL_APPS_DEBUG=$(make_api_call "GET" "apps")
-            if [ $? -eq 0 ]; then
+            ALL_APPS_RESULT=$?
+            set -e
+            
+            if [ $ALL_APPS_RESULT -eq 0 ]; then
               echo "✅ All apps API call succeeded - your API key works"
               echo "📋 Available apps:"
               echo "$ALL_APPS_DEBUG" | jq -r '.data[] | "\(.attributes.bundleId) - \(.attributes.name)"' 2>/dev/null || echo "Failed to parse apps list"
@@ -742,7 +758,7 @@ jobs:
             exit 1
           fi
 
-          # Debug: Show apps response
+          # Debug: Show apps response (only if successful)
           echo "📋 Apps API response:"
           echo "$APPS_RESPONSE" | jq . 2>/dev/null || echo "$APPS_RESPONSE"
 
