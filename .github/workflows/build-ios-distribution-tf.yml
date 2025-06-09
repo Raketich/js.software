@@ -57,6 +57,36 @@ jobs:
           echo "📋 Detected Bundle ID: $BUNDLE_ID"
           echo "📋 Detected App Name: $APP_NAME"
 
+      # Automated version management for TestFlight
+      - name: Automated Version Management
+        run: |
+          echo "🔢 Setting up automated versioning for TestFlight..."
+
+          # Get current version from Tauri config
+          CURRENT_VERSION=$(jq -r '.version // "1.0.0"' src-tauri/tauri.conf.json)
+
+          # Create new build number using GitHub run number for uniqueness
+          # Format: YYYYMMDD.RUN_NUMBER (e.g., 20250109.123)
+          BUILD_DATE=$(date +%Y%m%d)
+          NEW_BUILD_NUMBER="${BUILD_DATE}.${{ github.run_number }}"
+
+          # For TestFlight, we can also use a simpler incrementing scheme
+          # Alternative: just use run number if you prefer shorter build numbers
+          # NEW_BUILD_NUMBER="${{ github.run_number }}"
+
+          echo "MARKETING_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+          echo "BUNDLE_VERSION=$NEW_BUILD_NUMBER" >> $GITHUB_ENV
+
+          echo "📱 Marketing Version (CFBundleShortVersionString): $CURRENT_VERSION"
+          echo "🔢 Bundle Version (CFBundleVersion): $NEW_BUILD_NUMBER"
+          echo "🏃 GitHub Run Number: ${{ github.run_number }}"
+
+          # Update Tauri config with new version scheme
+          # Keep the marketing version, but prepare for bundle version override
+          jq --arg version "$CURRENT_VERSION" '.version = $version' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+          echo "✅ Version configuration prepared"
+
       # Import App Store distribution certificate
       - name: Setup iOS App Store signing
         id: ios-signing
@@ -136,6 +166,35 @@ jobs:
             /usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" "$INFO_PLIST"
           else
             echo "⚠️ Info.plist not found at $INFO_PLIST"
+          fi
+
+      # Apply version configuration to iOS project
+      - name: Apply automated versioning to iOS project
+        run: |
+          INFO_PLIST="src-tauri/gen/apple/app_iOS/Info.plist"
+
+          if [ -f "$INFO_PLIST" ]; then
+            echo "📝 Applying automated versioning to iOS project..."
+            
+            # Set CFBundleShortVersionString (marketing version)
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ env.MARKETING_VERSION }}" "$INFO_PLIST"
+            
+            # Set CFBundleVersion (bundle version) - this must be unique for each TestFlight upload
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ env.BUNDLE_VERSION }}" "$INFO_PLIST"
+            
+            echo "✅ Version configuration applied to Info.plist"
+            echo "📱 Marketing Version: ${{ env.MARKETING_VERSION }}"
+            echo "🔢 Bundle Version: ${{ env.BUNDLE_VERSION }}"
+            
+            # Verify the changes
+            echo "🔍 Current Info.plist versions:"
+            /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST"
+          else
+            echo "❌ Info.plist not found at $INFO_PLIST"
+            echo "🔍 Looking for Info.plist in alternative locations:"
+            find src-tauri/gen -name "Info.plist" -type f || echo "No Info.plist found"
+            exit 1
           fi
 
       # Apply App Store signing fixes
@@ -420,11 +479,12 @@ jobs:
           if [ -n "$CUSTOM_NOTES" ]; then
             RELEASE_NOTES="$CUSTOM_NOTES"
           else
-            RELEASE_NOTES="🚀 New ${{ env.APP_NAME }} iOS Build - Version 1.0.${{ github.run_number }}
+            RELEASE_NOTES="🚀 New ${{ env.APP_NAME }} iOS Build - Version ${{ env.MARKETING_VERSION }} (Build ${{ env.BUNDLE_VERSION }})
 
           📱 Built from: ${{ github.ref_name }}
           🔗 Commit: ${{ github.sha }}
           👤 Author: ${{ github.actor }}
+          🏃 Build Number: ${{ github.run_number }}
 
           📝 Changes in this build:
           ${{ github.event.head_commit.message }}
@@ -623,6 +683,9 @@ jobs:
           echo "🎉 iOS TestFlight Build Complete!"
           echo "📱 Bundle ID: ${{ env.BUNDLE_ID }}"
           echo "📱 App Name: ${{ env.APP_NAME }}"
+          echo "📱 Marketing Version: ${{ env.MARKETING_VERSION }}"
+          echo "🔢 Bundle Version: ${{ env.BUNDLE_VERSION }}"
+          echo "🏃 GitHub Run Number: ${{ github.run_number }}"
           echo "🔐 Signed with: Apple Distribution (${{ secrets.APPLE_TEAM_ID }})"
           echo "✈️ Uploaded to TestFlight"
           echo "⏱️ Build will be available for internal testing in 5-15 minutes"
