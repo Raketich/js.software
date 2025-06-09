@@ -589,10 +589,28 @@ jobs:
                 "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>/dev/null)
             fi
             
+            # Check if curl failed completely
+            if [ $? -ne 0 ] || [ -z "$response" ]; then
+              echo "❌ curl command failed completely"
+              echo "🔍 Debug info:"
+              echo "  Method: $method"
+              echo "  Endpoint: $endpoint"
+              echo "  JWT token length: ${#jwt_token}"
+              return 1
+            fi
+            
             local http_code="${response##*HTTP_CODE:}"
             local body="${response%HTTP_CODE:*}"
             
             echo "📡 HTTP Status: $http_code"
+            
+            # Check if we got a valid HTTP code
+            if [ -z "$http_code" ] || ! [[ "$http_code" =~ ^[0-9]+$ ]]; then
+              echo "❌ Invalid or missing HTTP status code"
+              echo "📄 Raw response:"
+              echo "$response"
+              return 1
+            fi
             
             if [ "$http_code" -ne 200 ] && [ "$http_code" -ne 201 ]; then
               echo "❌ API call failed with status $http_code"
@@ -617,6 +635,18 @@ jobs:
               return 1
             fi
             
+            # Verify API key file exists and is readable
+            if [ ! -f "$API_KEY_FILE" ]; then
+              echo "❌ API key file does not exist: $API_KEY_FILE"
+              return 1
+            fi
+            
+            if [ ! -r "$API_KEY_FILE" ]; then
+              echo "❌ API key file is not readable: $API_KEY_FILE"
+              ls -la "$API_KEY_FILE"
+              return 1
+            fi
+            
             # Create JWT header
             JWT_HEADER='{"alg":"ES256","kid":"'$TESTER_KEY_ID'","typ":"JWT"}'
             
@@ -638,10 +668,23 @@ jobs:
               ls -la "$API_KEY_FILE"
               echo "🔍 Testing openssl with API key:"
               openssl ec -in "$API_KEY_FILE" -noout -text 2>&1 | head -5
+              echo "🔍 Checking if API key is valid ES256 key:"
+              if ! openssl ec -in "$API_KEY_FILE" -noout 2>/dev/null; then
+                echo "❌ API key file is not a valid EC private key"
+              fi
               return 1
             fi
             
-            echo "$JWT_UNSIGNED.$JWT_SIGNATURE"
+            local token="$JWT_UNSIGNED.$JWT_SIGNATURE"
+            
+            # Validate token format
+            if [ -z "$token" ] || [ "$(echo "$token" | tr -cd '.' | wc -c)" -ne 2 ]; then
+              echo "❌ Generated JWT token has invalid format"
+              echo "🔍 Token preview: ${token:0:50}..."
+              return 1
+            fi
+            
+            echo "$token"
           }
 
           # Test JWT token generation first
@@ -655,6 +698,9 @@ jobs:
 
           # Get the app information
           echo "🔍 Finding app in App Store Connect..."
+          echo "🔍 Debug: Bundle ID = '$BUNDLE_ID'"
+          echo "🔍 Debug: API endpoint = 'apps?filter[bundleId]=$BUNDLE_ID'"
+
           APPS_RESPONSE=$(make_api_call "GET" "apps?filter[bundleId]=$BUNDLE_ID")
 
           if [ $? -ne 0 ]; then
@@ -663,6 +709,18 @@ jobs:
             echo "  Bundle ID: $BUNDLE_ID"
             echo "  API Key ID: $TESTER_KEY_ID"
             echo "  Issuer ID: $APP_STORE_CONNECT_ISSUER_ID"
+            
+            # Try to fetch all apps to see what's available
+            echo "🔍 Attempting to fetch all apps for debugging..."
+            ALL_APPS_DEBUG=$(make_api_call "GET" "apps")
+            if [ $? -eq 0 ]; then
+              echo "✅ All apps API call succeeded - your API key works"
+              echo "📋 Available apps:"
+              echo "$ALL_APPS_DEBUG" | jq -r '.data[] | "\(.attributes.bundleId) - \(.attributes.name)"' 2>/dev/null || echo "Failed to parse apps list"
+            else
+              echo "❌ All apps API call also failed - API key issue"
+            fi
+            
             exit 1
           fi
 
