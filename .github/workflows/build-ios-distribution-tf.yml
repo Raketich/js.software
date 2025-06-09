@@ -621,29 +621,10 @@ jobs:
           echo "📏 File size: $(ls -lh "${{ env.IPA_PATH }}" | awk '{print $5}')"
           echo "🔐 File permissions: $(ls -l "${{ env.IPA_PATH }}" | awk '{print $1}')"
 
-      # Setup App Store Connect API
-      - name: Setup App Store Connect API
-        run: |
-          # Create API key file from secret for uploads (Developer role)
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "${{ secrets.APP_STORE_CONNECT_API_KEY }}" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
-
-          # Set permissions
-          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
-
-          # Create API key file for tester management (App Manager role) if available
-          if [ -n "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}" ] && [ -n "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}" ]; then
-            echo "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}.p8
-            chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}.p8
-            echo "✅ Tester management API key configured"
-          else
-            echo "ℹ️ Tester management API key not configured - will use upload key (requires App Manager role)"
-          fi
-
       # Upload to TestFlight
       - name: Upload to TestFlight
         env:
-          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           # Generate release notes
@@ -666,6 +647,16 @@ jobs:
 
           # Create temporary file for release notes
           echo "$RELEASE_NOTES" > /tmp/release_notes.txt
+
+          echo "🔄 Using tester management API key for upload (since it's working)"
+          echo "🔑 API Key ID: $APP_STORE_CONNECT_API_KEY_ID"
+
+          # Setup API key file for upload
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
+
+          echo "✅ API key file setup complete"
 
           # Upload to TestFlight using xcrun altool
           xcrun altool --upload-app \
