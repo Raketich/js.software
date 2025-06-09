@@ -63,6 +63,17 @@ jobs:
 
           # Create minimal Fastlane setup for API validation
           mkdir -p fastlane
+
+          # Export environment variables for Fastlane
+          export APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
+          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
+          export BUNDLE_ID="$BUNDLE_ID"
+
+          echo "🔍 Debug: Environment variables:"
+          echo "   APP_STORE_CONNECT_TESTER_API_KEY_ID: $APP_STORE_CONNECT_TESTER_API_KEY_ID"
+          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
+          echo "   BUNDLE_ID: $BUNDLE_ID"
+
           cat > fastlane/Fastfile << 'EOF'
           opt_out_usage
 
@@ -72,19 +83,36 @@ jobs:
             desc "Validate App Store Connect API for tester management"
             lane :validate_tester_api do
               puts "🔍 Validating App Store Connect API for tester management..."
-              puts "🔑 Key ID: #{ENV['APP_STORE_CONNECT_TESTER_API_KEY_ID']}"
-              puts "🆔 Issuer ID: #{ENV['APP_STORE_CONNECT_ISSUER_ID']}"
+              
+              # Get values from environment
+              key_id = ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]
+              issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
+              bundle_id = ENV["BUNDLE_ID"]
+              
+              puts "🔑 Key ID: #{key_id}"
+              puts "🆔 Issuer ID: #{issuer_id}"
+              puts "📱 Bundle ID: #{bundle_id}"
+              
+              if key_id.nil? || key_id.empty?
+                puts "❌ APP_STORE_CONNECT_TESTER_API_KEY_ID is not set or empty"
+                raise "Missing required environment variable: APP_STORE_CONNECT_TESTER_API_KEY_ID"
+              end
+              
+              if issuer_id.nil? || issuer_id.empty?
+                puts "❌ APP_STORE_CONNECT_ISSUER_ID is not set or empty"
+                raise "Missing required environment variable: APP_STORE_CONNECT_ISSUER_ID"
+              end
               
               # Configure App Store Connect API
-              app_store_connect_api_key(
-                key_id: ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"],
-                issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV['APP_STORE_CONNECT_TESTER_API_KEY_ID']}.p8"
+              api_key = app_store_connect_api_key(
+                key_id: key_id,
+                issuer_id: issuer_id,
+                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
               )
               
               begin
                 require 'spaceship'
-                Spaceship::ConnectAPI.token = app_store_connect_api_key
+                Spaceship::ConnectAPI.token = api_key
                 
                 # Test API access
                 apps = Spaceship::ConnectAPI::App.all
@@ -92,7 +120,6 @@ jobs:
                 puts "📱 Found #{apps.length} apps in your account"
                 
                 # Check if target app exists
-                bundle_id = ENV["BUNDLE_ID"]
                 target_app = apps.find { |app| app.bundle_id == bundle_id }
                 
                 if target_app
@@ -132,19 +159,12 @@ jobs:
           app_identifier("$BUNDLE_ID")
           EOF
 
-          # Export environment variables for Fastlane
-          export APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
-          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
-          export BUNDLE_ID="$BUNDLE_ID"
-
-          echo "🔍 Debug: Environment variables:"
-          echo "   APP_STORE_CONNECT_TESTER_API_KEY_ID: $APP_STORE_CONNECT_TESTER_API_KEY_ID"
-          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
-          echo "   BUNDLE_ID: $BUNDLE_ID"
-
           # Run validation
           echo "🚀 Running API validation..."
-          if fastlane ios validate_tester_api; then
+          if APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID" \
+             APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID" \
+             BUNDLE_ID="$BUNDLE_ID" \
+             fastlane ios validate_tester_api; then
             echo "🎉 TestFlight tester management API validation passed!"
             echo "✅ Ready to proceed with build process"
           else
