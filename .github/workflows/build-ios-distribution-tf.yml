@@ -119,6 +119,25 @@ jobs:
       - name: Initialize Tauri iOS
         run: bun run tauri ios init
 
+      # Add export compliance to skip manual review
+      - name: Add export compliance to Info.plist
+        run: |
+          INFO_PLIST="src-tauri/gen/apple/app_iOS/Info.plist"
+
+          if [ -f "$INFO_PLIST" ]; then
+            echo "📝 Adding export compliance to Info.plist..."
+            
+            # Add ITSAppUsesNonExemptEncryption = NO to bypass export compliance dialog
+            /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$INFO_PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$INFO_PLIST"
+            
+            echo "✅ Export compliance added to Info.plist"
+            echo "🔍 Verifying Info.plist entry:"
+            /usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" "$INFO_PLIST"
+          else
+            echo "⚠️ Info.plist not found at $INFO_PLIST"
+          fi
+
       # Apply App Store signing fixes
       - name: Apply App Store signing fixes
         run: |
@@ -371,15 +390,24 @@ jobs:
           echo "📏 File size: $(ls -lh "${{ env.IPA_PATH }}" | awk '{print $5}')"
           echo "🔐 File permissions: $(ls -l "${{ env.IPA_PATH }}" | awk '{print $1}')"
 
-      # Setup App Store Connect API authentication
+      # Setup App Store Connect API
       - name: Setup App Store Connect API
         run: |
-          # Create API key file from secret
+          # Create API key file from secret for uploads (Developer role)
           mkdir -p ~/.appstoreconnect/private_keys
           echo "${{ secrets.APP_STORE_CONNECT_API_KEY }}" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
 
           # Set permissions
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+
+          # Create API key file for tester management (App Manager role) if available
+          if [ -n "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}" ] && [ -n "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}" ]; then
+            echo "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}.p8
+            chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}.p8
+            echo "✅ Tester management API key configured"
+          else
+            echo "ℹ️ Tester management API key not configured - will use upload key (requires App Manager role)"
+          fi
 
       # Upload to TestFlight
       - name: Upload to TestFlight
@@ -434,11 +462,152 @@ jobs:
             echo "💡 Add testers manually in App Store Connect → TestFlight → Internal Testing"
           fi
 
+      # Manage TestFlight Internal Testers
+      - name: Manage TestFlight Internal Testers
+        if: vars.TESTFLIGHT_INTERNAL_TESTERS != ''
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
+        run: |
+          echo "🔧 Managing TestFlight Internal Testers..."
+
+          # Determine which API key to use for tester management
+          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
+            TESTER_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
+            echo "🔑 Using dedicated App Manager key for tester management"
+          else
+            TESTER_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID"
+            echo "🔑 Using upload key for tester management (ensure it has App Manager role)"
+          fi
+
+          # Parse tester emails from variable
+          IFS=',' read -ra TESTERS <<< "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}"
+
+          # Get App ID for our bundle
+          BUNDLE_ID="${{ env.BUNDLE_ID }}"
+          echo "📱 Managing testers for Bundle ID: $BUNDLE_ID"
+
+          # Function to make App Store Connect API calls
+          make_api_call() {
+            local method="$1"
+            local endpoint="$2"
+            local data="$3"
+            
+            if [ -n "$data" ]; then
+              curl -s -X "$method" \
+                -H "Authorization: Bearer $(generate_jwt_token)" \
+                -H "Content-Type: application/json" \
+                -d "$data" \
+                "https://api.appstoreconnect.apple.com/v1/$endpoint"
+            else
+              curl -s -X "$method" \
+                -H "Authorization: Bearer $(generate_jwt_token)" \
+                "https://api.appstoreconnect.apple.com/v1/$endpoint"
+            fi
+          }
+
+          # Generate JWT token for API authentication
+          generate_jwt_token() {
+            # Create JWT header
+            JWT_HEADER='{"alg":"ES256","kid":"'$TESTER_KEY_ID'","typ":"JWT"}'
+            
+            # Create JWT payload
+            ISSUED_AT=$(date +%s)
+            EXPIRATION=$((ISSUED_AT + 1200)) # 20 minutes
+            JWT_PAYLOAD='{"iss":"'$APP_STORE_CONNECT_ISSUER_ID'","iat":'$ISSUED_AT',"exp":'$EXPIRATION',"aud":"appstoreconnect-v1"}'
+            
+            # Encode header and payload
+            JWT_HEADER_B64=$(echo -n "$JWT_HEADER" | base64 | tr -d '=\n' | tr '/+' '_-')
+            JWT_PAYLOAD_B64=$(echo -n "$JWT_PAYLOAD" | base64 | tr -d '=\n' | tr '/+' '_-')
+            
+            # Create signature using API key
+            JWT_UNSIGNED="$JWT_HEADER_B64.$JWT_PAYLOAD_B64"
+            JWT_SIGNATURE=$(echo -n "$JWT_UNSIGNED" | openssl dgst -sha256 -sign ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8 | base64 | tr -d '=\n' | tr '/+' '_-')
+            
+            echo "$JWT_UNSIGNED.$JWT_SIGNATURE"
+          }
+
+          # Get the app information
+          echo "🔍 Finding app in App Store Connect..."
+          APPS_RESPONSE=$(make_api_call "GET" "apps?filter[bundleId]=$BUNDLE_ID")
+
+          # Extract app ID
+          APP_ID=$(echo "$APPS_RESPONSE" | jq -r '.data[0].id // empty')
+
+          if [ -z "$APP_ID" ]; then
+            echo "❌ App not found in App Store Connect for Bundle ID: $BUNDLE_ID"
+            echo "💡 Make sure your app is registered in App Store Connect"
+            exit 1
+          fi
+
+          echo "✅ Found app: $APP_ID"
+
+          # Get existing beta testers
+          echo "🔍 Checking existing internal testers..."
+          EXISTING_TESTERS=$(make_api_call "GET" "apps/$APP_ID/betaTesters?filter[betaTesterType]=INTERNAL")
+
+          # Process each tester email
+          for email in "${TESTERS[@]}"; do
+            # Trim whitespace
+            email=$(echo "$email" | xargs)
+            echo "👤 Processing tester: $email"
+            
+            # Check if tester already exists
+            EXISTING_TESTER_ID=$(echo "$EXISTING_TESTERS" | jq -r --arg email "$email" '.data[] | select(.attributes.email == $email) | .id // empty')
+            
+            if [ -n "$EXISTING_TESTER_ID" ]; then
+              echo "✅ Tester $email already exists as internal tester"
+            else
+              echo "🆕 Adding new internal tester: $email"
+              
+              # Create new beta tester
+              TESTER_DATA='{
+                "data": {
+                  "type": "betaTesters",
+                  "attributes": {
+                    "email": "'$email'",
+                    "firstName": "Internal",
+                    "lastName": "Tester"
+                  },
+                  "relationships": {
+                    "apps": {
+                      "data": [{"type": "apps", "id": "'$APP_ID'"}]
+                    }
+                  }
+                }
+              }'
+              
+              CREATE_RESPONSE=$(make_api_call "POST" "betaTesters" "$TESTER_DATA")
+              
+              # Check for errors
+              if echo "$CREATE_RESPONSE" | jq -e '.errors' >/dev/null; then
+                echo "⚠️ Error adding tester $email:"
+                echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // .errors[0].title'
+                
+                # Check if it's because they need to be added to the team first
+                if echo "$CREATE_RESPONSE" | grep -q "must be added to your team"; then
+                  echo "💡 $email must be added to your App Store Connect team first"
+                  echo "   Go to: App Store Connect → Users and Access → People → +"
+                fi
+              else
+                echo "✅ Successfully added internal tester: $email"
+              fi
+            fi
+          done
+
+          echo "🎉 Internal tester management completed!"
+          echo "📧 Testers will receive invitations once the build is processed by Apple"
+          echo "⏱️ This usually takes 5-15 minutes after upload"
+
       # Clean up API key
       - name: Clean up API key
         if: always()
         run: |
           rm -f ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+          if [ -n "${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}" ]; then
+            rm -f ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}.p8
+          fi
 
       # Upload IPA as artifact backup
       - name: Upload IPA artifact
