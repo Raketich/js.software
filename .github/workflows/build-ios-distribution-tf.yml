@@ -525,6 +525,7 @@ jobs:
       # Manage TestFlight Internal Testers
       - name: Manage TestFlight Internal Testers
         if: vars.TESTFLIGHT_INTERNAL_TESTERS != ''
+        continue-on-error: true # Don't fail the build if tester management fails
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
@@ -548,27 +549,74 @@ jobs:
           BUNDLE_ID="${{ env.BUNDLE_ID }}"
           echo "📱 Managing testers for Bundle ID: $BUNDLE_ID"
 
+          # Verify API key file exists
+          API_KEY_FILE=~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
+          if [ ! -f "$API_KEY_FILE" ]; then
+            echo "❌ API key file not found: $API_KEY_FILE"
+            echo "🔍 Available API key files:"
+            ls -la ~/.appstoreconnect/private_keys/ || echo "No API keys directory found"
+            exit 1
+          fi
+
+          echo "✅ API key file found: $API_KEY_FILE"
+
           # Function to make App Store Connect API calls
           make_api_call() {
             local method="$1"
             local endpoint="$2"
             local data="$3"
             
+            local jwt_token
+            jwt_token=$(generate_jwt_token)
+            
+            if [ -z "$jwt_token" ]; then
+              echo "❌ Failed to generate JWT token"
+              return 1
+            fi
+            
+            echo "🔍 Making API call: $method $endpoint"
+            
+            local response
             if [ -n "$data" ]; then
-              curl -s -X "$method" \
-                -H "Authorization: Bearer $(generate_jwt_token)" \
+              response=$(curl -w "HTTP_CODE:%{http_code}" -s -X "$method" \
+                -H "Authorization: Bearer $jwt_token" \
                 -H "Content-Type: application/json" \
                 -d "$data" \
-                "https://api.appstoreconnect.apple.com/v1/$endpoint"
+                "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>/dev/null)
             else
-              curl -s -X "$method" \
-                -H "Authorization: Bearer $(generate_jwt_token)" \
-                "https://api.appstoreconnect.apple.com/v1/$endpoint"
+              response=$(curl -w "HTTP_CODE:%{http_code}" -s -X "$method" \
+                -H "Authorization: Bearer $jwt_token" \
+                "https://api.appstoreconnect.apple.com/v1/$endpoint" 2>/dev/null)
             fi
+            
+            local http_code="${response##*HTTP_CODE:}"
+            local body="${response%HTTP_CODE:*}"
+            
+            echo "📡 HTTP Status: $http_code"
+            
+            if [ "$http_code" -ne 200 ] && [ "$http_code" -ne 201 ]; then
+              echo "❌ API call failed with status $http_code"
+              echo "📄 Response body:"
+              echo "$body" | jq . 2>/dev/null || echo "$body"
+              return 1
+            fi
+            
+            echo "$body"
           }
 
           # Generate JWT token for API authentication
           generate_jwt_token() {
+            # Verify required environment variables
+            if [ -z "$APP_STORE_CONNECT_ISSUER_ID" ]; then
+              echo "❌ APP_STORE_CONNECT_ISSUER_ID is missing"
+              return 1
+            fi
+            
+            if [ -z "$TESTER_KEY_ID" ]; then
+              echo "❌ TESTER_KEY_ID is missing"
+              return 1
+            fi
+            
             # Create JWT header
             JWT_HEADER='{"alg":"ES256","kid":"'$TESTER_KEY_ID'","typ":"JWT"}'
             
@@ -583,21 +631,62 @@ jobs:
             
             # Create signature using API key
             JWT_UNSIGNED="$JWT_HEADER_B64.$JWT_PAYLOAD_B64"
-            JWT_SIGNATURE=$(echo -n "$JWT_UNSIGNED" | openssl dgst -sha256 -sign ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8 | base64 | tr -d '=\n' | tr '/+' '_-')
+            
+            if ! JWT_SIGNATURE=$(echo -n "$JWT_UNSIGNED" | openssl dgst -sha256 -sign "$API_KEY_FILE" | base64 | tr -d '=\n' | tr '/+' '_-' 2>/dev/null); then
+              echo "❌ Failed to sign JWT token with API key"
+              echo "🔍 Checking API key file permissions:"
+              ls -la "$API_KEY_FILE"
+              echo "🔍 Testing openssl with API key:"
+              openssl ec -in "$API_KEY_FILE" -noout -text 2>&1 | head -5
+              return 1
+            fi
             
             echo "$JWT_UNSIGNED.$JWT_SIGNATURE"
           }
 
+          # Test JWT token generation first
+          echo "🔐 Testing JWT token generation..."
+          TEST_TOKEN=$(generate_jwt_token)
+          if [ -z "$TEST_TOKEN" ]; then
+            echo "❌ JWT token generation failed"
+            exit 1
+          fi
+          echo "✅ JWT token generated successfully"
+
           # Get the app information
           echo "🔍 Finding app in App Store Connect..."
           APPS_RESPONSE=$(make_api_call "GET" "apps?filter[bundleId]=$BUNDLE_ID")
+
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to fetch apps from App Store Connect"
+            echo "🔍 Debug info:"
+            echo "  Bundle ID: $BUNDLE_ID"
+            echo "  API Key ID: $TESTER_KEY_ID"
+            echo "  Issuer ID: $APP_STORE_CONNECT_ISSUER_ID"
+            exit 1
+          fi
+
+          # Debug: Show apps response
+          echo "📋 Apps API response:"
+          echo "$APPS_RESPONSE" | jq . 2>/dev/null || echo "$APPS_RESPONSE"
 
           # Extract app ID
           APP_ID=$(echo "$APPS_RESPONSE" | jq -r '.data[0].id // empty')
 
           if [ -z "$APP_ID" ]; then
             echo "❌ App not found in App Store Connect for Bundle ID: $BUNDLE_ID"
-            echo "💡 Make sure your app is registered in App Store Connect"
+            echo "💡 Possible solutions:"
+            echo "   1. Ensure the app is registered in App Store Connect"
+            echo "   2. Check that the Bundle ID matches exactly"
+            echo "   3. Verify API key has access to this app"
+            
+            # Show available apps for debugging
+            echo "🔍 Available apps in your account:"
+            ALL_APPS=$(make_api_call "GET" "apps")
+            if [ $? -eq 0 ]; then
+              echo "$ALL_APPS" | jq -r '.data[] | "\(.attributes.bundleId) - \(.attributes.name)"' 2>/dev/null || echo "Failed to parse apps list"
+            fi
+            
             exit 1
           fi
 
@@ -606,6 +695,11 @@ jobs:
           # Get existing beta testers
           echo "🔍 Checking existing internal testers..."
           EXISTING_TESTERS=$(make_api_call "GET" "apps/$APP_ID/betaTesters?filter[betaTesterType]=INTERNAL")
+
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to fetch existing testers"
+            exit 1
+          fi
 
           # Process each tester email
           for email in "${TESTERS[@]}"; do
@@ -640,7 +734,12 @@ jobs:
               
               CREATE_RESPONSE=$(make_api_call "POST" "betaTesters" "$TESTER_DATA")
               
-              # Check for errors
+              if [ $? -ne 0 ]; then
+                echo "⚠️ Failed to add tester $email"
+                continue
+              fi
+              
+              # Check for errors in response
               if echo "$CREATE_RESPONSE" | jq -e '.errors' >/dev/null; then
                 echo "⚠️ Error adding tester $email:"
                 echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // .errors[0].title'
