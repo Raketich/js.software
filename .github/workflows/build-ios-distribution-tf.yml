@@ -117,7 +117,7 @@ jobs:
                 raise "Missing required environment variable: APP_STORE_CONNECT_API_KEY_ID"
               end
               
-              # Configure App Store Connect API
+              # Configure App Store Connect API globally
               app_store_connect_api_key(
                 key_id: key_id,
                 issuer_id: issuer_id,
@@ -137,11 +137,12 @@ jobs:
                 puts "🔑 Key file: #{key_file}"
                 puts "📏 Key file size: #{File.size(key_file)} bytes"
                 
-                # Test upload permissions using upload_to_testflight
+                # Test upload permissions using upload_to_testflight (dry run)
                 begin
                   puts "🔄 Testing upload permissions with upload_to_testflight..."
                   
                   # This will validate API access without requiring an actual IPA
+                  # API key is configured globally, no additional parameters needed
                   upload_to_testflight(
                     app_identifier: bundle_id,
                     skip_submission: true,
@@ -197,7 +198,7 @@ jobs:
                 raise "Missing required environment variable: APP_STORE_CONNECT_TESTER_API_KEY_ID"
               end
               
-              # Configure App Store Connect API
+              # Configure App Store Connect API globally
               app_store_connect_api_key(
                 key_id: key_id,
                 issuer_id: issuer_id,
@@ -221,6 +222,7 @@ jobs:
                 begin
                   puts "🔄 Testing tester management permissions with pilot..."
                   
+                  # API key is configured globally, no additional parameters needed
                   pilot(
                     app_identifier: bundle_id,
                     skip_submission: true,
@@ -852,7 +854,7 @@ jobs:
               
               puts "📏 IPA file size: #{File.size(ipa_path)} bytes"
               
-              # Configure App Store Connect API
+              # Configure App Store Connect API globally
               app_store_connect_api_key(
                 key_id: key_id,
                 issuer_id: issuer_id,
@@ -862,6 +864,7 @@ jobs:
               begin
                 puts "🔄 Starting TestFlight upload..."
                 
+                # Upload to TestFlight - API key is configured globally, no need to pass it here
                 upload_to_testflight(
                   ipa: ipa_path,
                   app_identifier: bundle_id,
@@ -869,17 +872,7 @@ jobs:
                   skip_waiting_for_build_processing: true,
                   notify_external_testers: false,
                   distribute_external: false,
-                  changelog: "Automated build from GitHub Actions",
-                  demo_account_required: false,
-                  beta_app_review_info: {
-                    contact_email: "support@js.software",
-                    contact_first_name: "Support",
-                    contact_last_name: "Team",
-                    contact_phone: "+1234567890",
-                    demo_account_name: "",
-                    demo_account_password: "",
-                    notes: "Internal build for testing"
-                  }
+                  changelog: "Automated build from GitHub Actions"
                 )
                 
                 puts "🎉 Successfully uploaded to TestFlight!"
