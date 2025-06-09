@@ -815,30 +815,37 @@ jobs:
             lane :upload_testflight do
               puts "🚀 Uploading to TestFlight using Fastlane..."
               
-              # Get values from environment
+              # Get values from environment with explicit nil checks
               key_id = ENV["APP_STORE_CONNECT_API_KEY_ID"]
               issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
               bundle_id = ENV["BUNDLE_ID"]
               ipa_path = ENV["IPA_PATH"]
               
-              puts "🔑 Developer Key ID: #{key_id}"
-              puts "🆔 Issuer ID: #{issuer_id}"
-              puts "📱 Bundle ID: #{bundle_id}"
-              puts "📦 IPA Path: #{ipa_path}"
+              # Debug: Show what we actually received
+              puts "🔍 Debug: Raw environment variables:"
+              puts "   key_id = #{key_id.inspect}"
+              puts "   issuer_id = #{issuer_id.inspect}"
+              puts "   bundle_id = #{bundle_id.inspect}"
+              puts "   ipa_path = #{ipa_path.inspect}"
               
-              # Validate inputs
+              # Validate all required parameters are present and not nil
               if key_id.nil? || key_id.empty?
-                puts "❌ APP_STORE_CONNECT_API_KEY_ID is not set or empty"
+                puts "❌ APP_STORE_CONNECT_API_KEY_ID is nil or empty"
                 raise "Missing required environment variable: APP_STORE_CONNECT_API_KEY_ID"
               end
               
               if issuer_id.nil? || issuer_id.empty?
-                puts "❌ APP_STORE_CONNECT_ISSUER_ID is not set or empty"
+                puts "❌ APP_STORE_CONNECT_ISSUER_ID is nil or empty"
                 raise "Missing required environment variable: APP_STORE_CONNECT_ISSUER_ID"
               end
               
+              if bundle_id.nil? || bundle_id.empty?
+                puts "❌ BUNDLE_ID is nil or empty"
+                raise "Missing required environment variable: BUNDLE_ID"
+              end
+              
               if ipa_path.nil? || ipa_path.empty?
-                puts "❌ IPA_PATH is not set or empty"
+                puts "❌ IPA_PATH is nil or empty"
                 raise "Missing required environment variable: IPA_PATH"
               end
               
@@ -847,19 +854,39 @@ jobs:
                 raise "IPA file not found at path: #{ipa_path}"
               end
               
+              # Construct file path safely
+              key_filepath = "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
+              
+              puts "🔑 Developer Key ID: #{key_id}"
+              puts "🆔 Issuer ID: #{issuer_id}"
+              puts "📱 Bundle ID: #{bundle_id}"
+              puts "📦 IPA Path: #{ipa_path}"
+              puts "🔑 Key File Path: #{key_filepath}"
               puts "📏 IPA file size: #{File.size(ipa_path)} bytes"
+              
+              # Verify key file exists
+              unless File.exist?(key_filepath)
+                puts "❌ API key file not found: #{key_filepath}"
+                puts "🔍 Looking for key files in ~/.appstoreconnect/private_keys/:"
+                Dir.glob("#{Dir.home}/.appstoreconnect/private_keys/*").each do |file|
+                  puts "   Found: #{File.basename(file)}"
+                end
+                raise "API key file not found: #{key_filepath}"
+              end
+              
+              puts "✅ API key file verified: #{key_filepath} (#{File.size(key_filepath)} bytes)"
               
               begin
                 puts "🔄 Starting TestFlight upload..."
                 
-                # Use the direct api_key parameter approach to avoid hash/string conflicts
+                # Use the direct api_key parameter approach with explicit validation
                 upload_to_testflight(
                   ipa: ipa_path,
                   app_identifier: bundle_id,
                   api_key: {
                     key_id: key_id,
                     issuer_id: issuer_id,
-                    key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
+                    key_filepath: key_filepath
                   },
                   skip_submission: false,
                   skip_waiting_for_build_processing: true,
