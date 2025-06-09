@@ -117,13 +117,6 @@ jobs:
                 raise "Missing required environment variable: APP_STORE_CONNECT_API_KEY_ID"
               end
               
-              # Configure App Store Connect API globally
-              app_store_connect_api_key(
-                key_id: key_id,
-                issuer_id: issuer_id,
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-              )
-              
               begin
                 puts "🔍 Testing Developer API key configuration..."
                 
@@ -141,10 +134,14 @@ jobs:
                 begin
                   puts "🔄 Testing upload permissions with upload_to_testflight..."
                   
-                  # This will validate API access without requiring an actual IPA
-                  # API key is configured globally, no additional parameters needed
+                  # Use direct api_key parameter to avoid hash/string conflicts
                   upload_to_testflight(
                     app_identifier: bundle_id,
+                    api_key: {
+                      key_id: key_id,
+                      issuer_id: issuer_id,
+                      key_filepath: key_file
+                    },
                     skip_submission: true,
                     skip_waiting_for_build_processing: true
                   )
@@ -198,13 +195,6 @@ jobs:
                 raise "Missing required environment variable: APP_STORE_CONNECT_TESTER_API_KEY_ID"
               end
               
-              # Configure App Store Connect API globally
-              app_store_connect_api_key(
-                key_id: key_id,
-                issuer_id: issuer_id,
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-              )
-              
               begin
                 puts "🔍 Testing App Manager API key configuration..."
                 
@@ -222,9 +212,14 @@ jobs:
                 begin
                   puts "🔄 Testing tester management permissions with pilot..."
                   
-                  # API key is configured globally, no additional parameters needed
+                  # Use direct api_key parameter to avoid hash/string conflicts
                   pilot(
                     app_identifier: bundle_id,
+                    api_key: {
+                      key_id: key_id,
+                      issuer_id: issuer_id,
+                      key_filepath: key_file
+                    },
                     skip_submission: true,
                     skip_waiting_for_build_processing: true
                   )
@@ -854,20 +849,18 @@ jobs:
               
               puts "📏 IPA file size: #{File.size(ipa_path)} bytes"
               
-              # Configure App Store Connect API globally
-              app_store_connect_api_key(
-                key_id: key_id,
-                issuer_id: issuer_id,
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-              )
-              
               begin
                 puts "🔄 Starting TestFlight upload..."
                 
-                # Upload to TestFlight - API key is configured globally, no need to pass it here
+                # Use the direct api_key parameter approach to avoid hash/string conflicts
                 upload_to_testflight(
                   ipa: ipa_path,
                   app_identifier: bundle_id,
+                  api_key: {
+                    key_id: key_id,
+                    issuer_id: issuer_id,
+                    key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
+                  },
                   skip_submission: false,
                   skip_waiting_for_build_processing: true,
                   notify_external_testers: false,
@@ -1037,12 +1030,12 @@ jobs:
                 raise "Missing required environment variable: APP_STORE_CONNECT_ISSUER_ID"
               end
               
-              # Configure App Store Connect API
-              app_store_connect_api_key(
+              # Build API key configuration hash for direct parameter usage
+              api_key_config = {
                 key_id: key_id,
                 issuer_id: issuer_id,
                 key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-              )
+              }
               
               # Split testers by comma and clean whitespace
               testers = testers_string.split(',').map(&:strip)
@@ -1075,6 +1068,7 @@ jobs:
                 begin
                   puts "🔄 Approach 1: Using pilot with individual tester..."
                   pilot(
+                    api_key: api_key_config,
                     skip_submission: true,
                     skip_waiting_for_build_processing: true,
                     app_identifier: bundle_id,
