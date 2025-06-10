@@ -1009,13 +1009,14 @@ jobs:
           echo "🔍 Finding app ID for bundle: $BUNDLE_ID"
 
           # Add delay to allow for build processing and API sync
-          echo "⏱️  Waiting 30 seconds for upload to sync with App Store Connect API..."
-          sleep 30
+          echo "⏱️  Waiting 2 minutes for upload to sync and begin processing in App Store Connect..."
+          echo "📋 Apple's TestFlight processing can take 5-15 minutes for new builds"
+          sleep 120
 
           # Function to get app ID with retries
           get_app_id() {
-            local retries=5
-            local delay=15
+            local retries=8
+            local delay=30
             
             for i in $(seq 1 $retries); do
               echo "🔄 Attempt $i/$retries: Looking for app with bundle ID: $BUNDLE_ID"
@@ -1048,9 +1049,11 @@ jobs:
                 
                 if [ $i -lt $retries ]; then
                   echo "⏱️  Build may still be processing. Waiting ${delay}s before retry..."
+                  echo "📊 Total wait time so far: $((120 + (i * delay))) seconds"
                   sleep $delay
                 else
                   echo "❌ App still not found after $retries attempts"
+                  echo "📊 Total wait time: $((120 + (retries * delay))) seconds (~$((((120 + (retries * delay)) + 30) / 60)) minutes)"
                   echo "📋 Available apps (first 5):"
                   echo "$APPS_RESPONSE" | jq -r '.data[]? | "\(.attributes.name) - \(.attributes.bundleId)"' | head -5
                   return 1
