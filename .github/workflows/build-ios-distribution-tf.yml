@@ -820,7 +820,7 @@ jobs:
           default_platform(:ios)
 
           platform :ios do
-            desc "Upload IPA to TestFlight using app_store_connect_api_key"
+            desc "Upload IPA to TestFlight using api_key hash parameter"
             lane :upload_testflight do
               puts "🚀 Uploading to TestFlight using Fastlane..."
               
@@ -848,19 +848,17 @@ jobs:
               puts "✅ API key file verified: #{key_file} (#{File.size(key_file)} bytes)"
               
               begin
-                puts "🔄 Starting TestFlight upload with Developer key using app_store_connect_api_key..."
+                puts "🔄 Starting TestFlight upload with Developer key using api_key hash..."
                 
-                # Set up API key using the documented Fastlane approach
-                app_store_connect_api_key(
-                  key_id: key_id,
-                  issuer_id: issuer_id,
-                  key_filepath: key_file
-                )
-                
-                # Now use upload_to_testflight without API key parameters since they're set globally
+                # Use api_key parameter directly as a hash (not the global action)
                 upload_to_testflight(
                   ipa: ipa_path,
                   app_identifier: bundle_id,
+                  api_key: {
+                    key_id: key_id,
+                    issuer_id: issuer_id,
+                    key_filepath: key_file
+                  },
                   skip_submission: false,
                   skip_waiting_for_build_processing: true,
                   notify_external_testers: false,
@@ -882,18 +880,16 @@ jobs:
                   
                   if File.exist?(fallback_key_file)
                     begin
-                      puts "🔄 Starting TestFlight upload with App Manager key using app_store_connect_api_key..."
-                      
-                      # Set up App Manager API key
-                      app_store_connect_api_key(
-                        key_id: fallback_key_id,
-                        issuer_id: issuer_id,
-                        key_filepath: fallback_key_file
-                      )
+                      puts "🔄 Starting TestFlight upload with App Manager key using api_key hash..."
                       
                       upload_to_testflight(
                         ipa: ipa_path,
                         app_identifier: bundle_id,
+                        api_key: {
+                          key_id: fallback_key_id,
+                          issuer_id: issuer_id,
+                          key_filepath: fallback_key_file
+                        },
                         skip_submission: false,
                         skip_waiting_for_build_processing: true,
                         notify_external_testers: false,
