@@ -239,17 +239,36 @@ jobs:
             local url="$2"
             local data="$3"
             
+            echo "🔍 Debug - Making $method request to: $url" >&2
+            
             if [ "$method" = "GET" ]; then
-              curl -s -H "Authorization: Bearer $JWT_TOKEN" \
+              response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+                   -H "Authorization: Bearer $JWT_TOKEN" \
                    -H "Content-Type: application/json" \
-                   "$url"
+                   "$url" 2>/dev/null)
             else
-              curl -s -X "$method" \
+              response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+                   -X "$method" \
                    -H "Authorization: Bearer $JWT_TOKEN" \
                    -H "Content-Type: application/json" \
                    -d "$data" \
-                   "$url"
+                   "$url" 2>/dev/null)
             fi
+            
+            # Extract HTTP status and body
+            http_status=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
+            body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
+            
+            echo "🔍 Debug - HTTP Status: $http_status" >&2
+            
+            # Check for HTTP errors
+            if [[ "$http_status" -ge 400 ]]; then
+              echo "❌ HTTP Error $http_status for $method $url" >&2
+              echo "🔍 Response body: $body" >&2
+            fi
+            
+            # Return only the body
+            echo "$body"
           }
 
           # Step 1: Find the internal testing group "js.s team"
@@ -385,19 +404,50 @@ jobs:
               echo "🔍 Checking if tester exists globally..."
               EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
               
+              # Debug: Show the raw response first
+              echo "🔍 Debug - Raw API response:"
+              echo "$EXISTING_TESTER_RESPONSE"
+              echo "🔍 Debug - Response length: ${#EXISTING_TESTER_RESPONSE} characters"
+              
+              # Check if response is empty or curl failed
+              if [ -z "$EXISTING_TESTER_RESPONSE" ]; then
+                echo "❌ Empty response from API - this indicates a network or authentication issue"
+                echo "💡 Possible causes:"
+                echo "   - Network connectivity issues"
+                echo "   - API endpoint unreachable"
+                echo "   - Authentication token expired or invalid"
+                VALIDATION_FAILED=true
+                continue
+              fi
+              
+              # Check if response is valid JSON
+              if ! echo "$EXISTING_TESTER_RESPONSE" | jq . > /dev/null 2>&1; then
+                echo "❌ Invalid JSON response from API"
+                echo "🔍 Raw response: $EXISTING_TESTER_RESPONSE"
+                echo "💡 This might be an HTTP error or server issue"
+                VALIDATION_FAILED=true
+                continue
+              fi
+              
               # Check for API errors in tester lookup
               if echo "$EXISTING_TESTER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
                 echo "❌ API Error during tester lookup:"
                 echo "$EXISTING_TESTER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+                echo "💡 Error code: $(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.errors[0].code // "No code"')"
                 echo "💡 This might be due to:"
                 echo "   - Invalid email format"
                 echo "   - Email not associated with an Apple ID"
                 echo "   - API key permissions"
+                echo "   - Rate limiting"
                 VALIDATION_FAILED=true
                 continue
               fi
               
               EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+              
+              # Debug: Show what we extracted
+              echo "🔍 Debug - Extracted tester ID: '$EXISTING_TESTER_ID'"
+              echo "🔍 Debug - Data array length: $(echo "$EXISTING_TESTER_RESPONSE" | jq '.data | length' 2>/dev/null || echo "0")"
               
               if [ -n "$EXISTING_TESTER_ID" ]; then
                 echo "✅ Tester exists and can be added: $email (ID: $EXISTING_TESTER_ID)"
@@ -936,11 +986,36 @@ jobs:
             local url="$2"
             local data="$3"
             
+            echo "🔍 Debug - Making $method request to: $url" >&2
+            
             if [ "$method" = "GET" ]; then
-              curl -s -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" "$url"
+              response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+                   -H "Authorization: Bearer $JWT_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   "$url" 2>/dev/null)
             else
-              curl -s -X "$method" -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" -d "$data" "$url"
+              response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+                   -X "$method" \
+                   -H "Authorization: Bearer $JWT_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   -d "$data" \
+                   "$url" 2>/dev/null)
             fi
+            
+            # Extract HTTP status and body
+            http_status=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
+            body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
+            
+            echo "🔍 Debug - HTTP Status: $http_status" >&2
+            
+            # Check for HTTP errors
+            if [[ "$http_status" -ge 400 ]]; then
+              echo "❌ HTTP Error $http_status for $method $url" >&2
+              echo "🔍 Response body: $body" >&2
+            fi
+            
+            # Return only the body
+            echo "$body"
           }
 
           # Process each tester that was validated earlier
