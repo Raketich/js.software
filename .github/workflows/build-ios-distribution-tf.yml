@@ -447,7 +447,7 @@ jobs:
                 echo "🔄 User not found as existing beta tester - attempting to create and add..."
                 
                 # Try to create new beta tester and add to group
-                CREATE_TESTER_DATA="{\"data\":{\"type\":\"betaTesters\",\"attributes\":{\"email\":\"$email\",\"firstName\":\"Beta\",\"lastName\":\"Tester\"}}}"
+                CREATE_TESTER_DATA="{\"data\":{\"type\":\"betaTesters\",\"attributes\":{\"email\":\"$email\",\"firstName\":\"Beta\",\"lastName\":\"Tester\"},\"relationships\":{\"betaGroups\":{\"data\":[{\"type\":\"betaGroups\",\"id\":\"$GROUP_ID\"}]}}}}"
                 CREATE_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaTesters" "$CREATE_TESTER_DATA")
                 
                 if echo "$CREATE_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
@@ -506,20 +506,12 @@ jobs:
                 else
                   NEW_TESTER_ID=$(echo "$CREATE_RESPONSE" | jq -r '.data.id // empty')
                   if [ -n "$NEW_TESTER_ID" ]; then
-                    echo "✅ Successfully created beta tester with ID: $NEW_TESTER_ID"
-                    
-                    # Add new tester to group
-                    ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$NEW_TESTER_ID\"}]}"
-                    ADD_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/relationships/betaTesters" "$ADD_TO_GROUP_DATA")
-                    
-                    if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
-                      echo "❌ Failed to add new tester to group: $(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
-                      echo "❌ STOPPING BUILD - Could not add new tester to group"
-                      exit 1
-                    else
-                      echo "✅ Successfully added new tester to group"
-                      SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                    fi
+                    echo "✅ Successfully created and added beta tester to group (ID: $NEW_TESTER_ID)"
+                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                  else
+                    echo "❌ Failed to extract new tester ID from response"
+                    echo "❌ STOPPING BUILD - Tester creation response invalid"
+                    exit 1
                   fi
                 fi
               fi
