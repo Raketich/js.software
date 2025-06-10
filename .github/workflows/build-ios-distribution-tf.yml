@@ -739,8 +739,8 @@ jobs:
           echo "📏 File size: $(ls -lh "${{ env.IPA_PATH }}" | awk '{print $5}')"
           echo "🔐 File permissions: $(ls -l "${{ env.IPA_PATH }}" | awk '{print $1}')"
 
-      # Upload to TestFlight using Fastlane
-      - name: Upload to TestFlight using Fastlane
+      # Upload to TestFlight using xcrun altool (fallback from buggy Fastlane)
+      - name: Upload to TestFlight using xcrun altool
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
@@ -753,7 +753,7 @@ jobs:
           MARKETING_VERSION: ${{ env.MARKETING_VERSION }}
           BUNDLE_VERSION: ${{ env.BUNDLE_VERSION }}
         run: |
-          echo "🚀 Uploading to TestFlight using Fastlane and Developer API key..."
+          echo "🚀 Uploading to TestFlight using xcrun altool (Apple's direct tool)..."
           echo "🔑 Developer API Key ID: $APP_STORE_CONNECT_API_KEY_ID"
 
           # Check if required secrets are available
@@ -763,19 +763,13 @@ jobs:
             exit 1
           fi
 
-          # Install Fastlane if not already available
-          if ! command -v fastlane &> /dev/null; then
-            echo "📦 Installing Fastlane..."
-            sudo gem install fastlane --no-document
-          fi
-
-          # Setup API key files for upload
+          # Setup API key files for altool (altool expects them in a specific location)
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$APP_STORE_CONNECT_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
 
           if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8 ]; then
-            echo "❌ Failed to create Developer API key file for upload"
+            echo "❌ Failed to create Developer API key file for altool"
             exit 1
           fi
 
@@ -807,175 +801,71 @@ jobs:
           💾 Download from TestFlight to test the latest features!"
           fi
 
-          # Create temporary file for release notes
-          echo "$RELEASE_NOTES" > /tmp/release_notes.txt
-          echo "📝 Release notes prepared (${#RELEASE_NOTES} characters)"
-
-          # Create Fastlane setup for upload
-          mkdir -p fastlane
-
-          cat > fastlane/Fastfile << 'EOF'
-          opt_out_usage
-
-          default_platform(:ios)
-
-          platform :ios do
-            desc "Upload IPA to TestFlight using pilot with JSON API key file"
-            lane :upload_testflight do
-              puts "🚀 Uploading to TestFlight using pilot command..."
-              
-              # Get values from environment
-              key_id = ENV["APP_STORE_CONNECT_API_KEY_ID"]
-              issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
-              bundle_id = ENV["BUNDLE_ID"]
-              ipa_path = ENV["IPA_PATH"]
-              
-              puts "🔑 Developer Key ID: #{key_id}"
-              puts "🆔 Issuer ID: #{issuer_id}"
-              puts "📱 Bundle ID: #{bundle_id}"
-              puts "📦 IPA Path: #{ipa_path}"
-              puts "📏 IPA file size: #{File.size(ipa_path)} bytes"
-              
-              # Build key file path
-              key_file = "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-              puts "🔑 Key File Path: #{key_file}"
-              
-              unless File.exist?(key_file)
-                puts "❌ API key file not found: #{key_file}"
-                raise "API key file not found: #{key_file}"
-              end
-              
-              puts "✅ API key file verified: #{key_file} (#{File.size(key_file)} bytes)"
-              
-              # Create JSON API key file as recommended by Fastlane docs
-              api_key_json_path = "/tmp/api_key_info.json"
-              api_key_json_content = {
-                "key_id" => key_id,
-                "issuer_id" => issuer_id,
-                "key_filepath" => key_file
-              }
-              
-              File.write(api_key_json_path, JSON.pretty_generate(api_key_json_content))
-              puts "✅ Created API key JSON file: #{api_key_json_path}"
-              
-              begin
-                puts "🔄 Starting TestFlight upload with pilot using JSON API key file..."
-                
-                # Use pilot directly with api_key_path pointing to JSON file
-                pilot(
-                  ipa: ipa_path,
-                  app_identifier: bundle_id,
-                  api_key_path: api_key_json_path,
-                  skip_submission: false,
-                  skip_waiting_for_build_processing: true,
-                  distribute_external: false
-                )
-                
-                puts "🎉 Successfully uploaded to TestFlight with Developer key!"
-                
-              rescue => e
-                puts "❌ Developer key upload failed: #{e.message}"
-                puts "🔄 Trying fallback with App Manager key if available..."
-                
-                # Fallback: Try with App Manager key if available
-                fallback_key_id = ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]
-                if fallback_key_id && !fallback_key_id.empty?
-                  puts "🔄 Trying fallback with App Manager key: #{fallback_key_id}"
-                  
-                  fallback_key_file = "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{fallback_key_id}.p8"
-                  
-                  if File.exist?(fallback_key_file)
-                    begin
-                      puts "🔄 Starting TestFlight upload with App Manager key using JSON API key file..."
-                      
-                      # Create JSON file for App Manager key
-                      fallback_api_key_json_path = "/tmp/api_key_info_fallback.json"
-                      fallback_api_key_json_content = {
-                        "key_id" => fallback_key_id,
-                        "issuer_id" => issuer_id,
-                        "key_filepath" => fallback_key_file
-                      }
-                      
-                      File.write(fallback_api_key_json_path, JSON.pretty_generate(fallback_api_key_json_content))
-                      puts "✅ Created fallback API key JSON file: #{fallback_api_key_json_path}"
-                      
-                      pilot(
-                        ipa: ipa_path,
-                        app_identifier: bundle_id,
-                        api_key_path: fallback_api_key_json_path,
-                        skip_submission: false,
-                        skip_waiting_for_build_processing: true,
-                        distribute_external: false
-                      )
-                      
-                      puts "🎉 Successfully uploaded to TestFlight with App Manager key!"
-                      
-                    rescue => e2
-                      puts "❌ Both keys failed:"
-                      puts "   Developer key error: #{e.message}"
-                      puts "   App Manager key error: #{e2.message}"
-                      raise e2
-                    end
-                  else
-                    puts "❌ Fallback key file not found: #{fallback_key_file}"
-                    raise e
-                  end
-                else
-                  puts "❌ No fallback App Manager key available"
-                  raise e
-                end
-              ensure
-                # Clean up JSON files
-                File.delete(api_key_json_path) if File.exist?(api_key_json_path)
-                File.delete("/tmp/api_key_info_fallback.json") if File.exist?("/tmp/api_key_info_fallback.json")
-              end
-            end
-          end
-          EOF
-
-          # Create Appfile
-          cat > fastlane/Appfile << EOF
-          app_identifier("$BUNDLE_ID")
-          EOF
-
-          # Export environment variables for Fastlane
-          export APP_STORE_CONNECT_API_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID"
-          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
-          export APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
-          export BUNDLE_ID="$BUNDLE_ID"
-          export IPA_PATH="$IPA_PATH"
-
-          echo "🔍 Debug: Environment variables for upload:"
-          echo "   APP_STORE_CONNECT_API_KEY_ID: $APP_STORE_CONNECT_API_KEY_ID"
-          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
-          echo "   BUNDLE_ID: $BUNDLE_ID"
-          echo "   IPA_PATH: $IPA_PATH"
-
-          # Run Fastlane upload
-          echo "🚀 Running Fastlane TestFlight upload..."
-          if APP_STORE_CONNECT_API_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID" \
-             APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID" \
-             APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID" \
-             BUNDLE_ID="$BUNDLE_ID" \
-             IPA_PATH="$IPA_PATH" \
-             fastlane ios upload_testflight; then
-            echo "🎉 Fastlane TestFlight upload completed successfully!"
-            echo "✅ Build is now processing in TestFlight"
-          else
-            echo "❌ Fastlane TestFlight upload failed"
-            echo "💡 Check logs above for specific error details"
+          # Verify IPA file exists
+          if [ ! -f "$IPA_PATH" ]; then
+            echo "❌ IPA file not found at: $IPA_PATH"
             exit 1
           fi
 
-          # Clean up
-          rm -rf fastlane
+          echo "✅ IPA file verified: $IPA_PATH"
+          echo "📏 IPA file size: $(ls -lh "$IPA_PATH" | awk '{print $5}')"
+
+          # Function to try altool upload with a specific API key
+          try_altool_upload() {
+            local api_key_id=$1
+            local description=$2
+            
+            echo "🔄 Trying altool upload with $description (Key ID: $api_key_id)..."
+            
+            # Run xcrun altool upload
+            if xcrun altool \
+              --upload-app \
+              --file "$IPA_PATH" \
+              --type ios \
+              --apiKey "$api_key_id" \
+              --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+              --verbose; then
+              
+              echo "🎉 Successfully uploaded to TestFlight with $description!"
+              return 0
+            else
+              echo "❌ Upload failed with $description"
+              return 1
+            fi
+          }
+
+          # Try upload with Developer key first
+          echo "🚀 Starting TestFlight upload with Developer API key..."
+          UPLOAD_SUCCESS=false
+
+          if try_altool_upload "$APP_STORE_CONNECT_API_KEY_ID" "Developer key"; then
+            UPLOAD_SUCCESS=true
+          elif [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
+            echo "🔄 Trying fallback with App Manager key..."
+            if try_altool_upload "$APP_STORE_CONNECT_TESTER_API_KEY_ID" "App Manager key"; then
+              UPLOAD_SUCCESS=true
+            fi
+          fi
+
+          if [ "$UPLOAD_SUCCESS" = false ]; then
+            echo "❌ All upload attempts failed"
+            echo "💡 Check your API keys and permissions"
+            echo "💡 Ensure your API keys have the correct roles:"
+            echo "   - Developer key: Developer role"
+            echo "   - App Manager key: App Manager role"
+            exit 1
+          fi
+
+          # Clean up API key files
           rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
           if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
             rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
           fi
-          rm -f /tmp/release_notes.txt
 
           echo "🧹 Cleanup completed"
+          echo "✅ Upload to TestFlight completed successfully!"
+          echo "⏱️  Build will be available for internal testing in 5-15 minutes"
+          echo "🔗 Check status: https://appstoreconnect.apple.com/apps"
 
       # Add internal testers (if configured)
       - name: Notify internal testers
@@ -1233,7 +1123,7 @@ jobs:
           echo "🔢 Bundle Version: ${{ env.BUNDLE_VERSION }}"
           echo "🏃 GitHub Run Number: ${{ github.run_number }}"
           echo "🔐 Signed with: Apple Distribution (${{ secrets.APPLE_TEAM_ID }})"
-          echo "🚀 Uploaded via: Fastlane upload_to_testflight (Developer API key)"
+          echo "🚀 Uploaded via: xcrun altool (Apple's direct tool)"
           echo "👥 Tester Management via: Fastlane pilot (App Manager API key)"
           echo "✈️ Uploaded to TestFlight successfully"
           echo "⏱️ Build will be available for internal testing in 5-15 minutes"
@@ -1241,6 +1131,6 @@ jobs:
           echo ""
           echo "📋 Unified Fastlane Approach:"
           echo "   • Validation: Both API keys tested with appropriate Fastlane actions"
-          echo "   • Upload: Developer key with upload_to_testflight (future-proof)"
+          echo "   • Upload: Developer key with xcrun altool (Apple's direct tool)"
           echo "   • Tester Management: App Manager key with pilot (proper permissions)"
           echo "   • Deprecation Ready: No more xcrun altool dependency"
