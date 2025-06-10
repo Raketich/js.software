@@ -60,22 +60,23 @@ jobs:
           # Create minimal test Fastfile
           cat > /tmp/test_validation.rb << 'EOF'
           require 'fastlane'
+          require 'spaceship'
 
           # Test Developer API key
           puts "🔑 Testing Developer API key..."
-              begin
-            api_key = FastlaneCore::Helper::AppStoreConnectApiHelper.load_api_key({
+          begin
+            # Create API key directly using Spaceship
+            api_key = Spaceship::ConnectAPI::Token.create(
               key_id: ENV["APP_STORE_CONNECT_API_KEY_ID"],
               issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
-              key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV["APP_STORE_CONNECT_API_KEY_ID"]}.p8"
-            })
+              filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV["APP_STORE_CONNECT_API_KEY_ID"]}.p8"
+            )
             
             # Test by fetching apps (lightweight API call)
-            require 'spaceship'
             Spaceship::ConnectAPI.token = api_key
             apps = Spaceship::ConnectAPI.get_apps(limit: 1)
             puts "✅ Developer API key works (can access #{apps.count} apps)"
-              rescue => e
+          rescue => e
             puts "❌ Developer API key failed: #{e.message}"
             exit 1
           end
@@ -83,21 +84,21 @@ jobs:
           # Test Tester Management API key if configured
           if ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]
             puts "🔑 Testing App Manager API key..."
-              begin
-              tester_api_key = FastlaneCore::Helper::AppStoreConnectApiHelper.load_api_key({
+            begin
+              tester_api_key = Spaceship::ConnectAPI::Token.create(
                 key_id: ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"],
                 issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]}.p8"
-              })
+                filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]}.p8"
+              )
               
               Spaceship::ConnectAPI.token = tester_api_key
               groups = Spaceship::ConnectAPI.get_beta_groups(limit: 1)
               puts "✅ App Manager API key works (can access #{groups.count} beta groups)"
-              rescue => e
+            rescue => e
               puts "❌ App Manager API key failed: #{e.message}"
               exit 1
-              end
             end
+          end
 
           puts "🎉 All API keys validated successfully!"
           EOF
