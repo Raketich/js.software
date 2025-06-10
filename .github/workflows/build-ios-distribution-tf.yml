@@ -233,6 +233,34 @@ jobs:
 
           echo "✅ JWT token generated successfully"
 
+          # Debug JWT token
+          echo "🔍 Debug - JWT token length: ${#JWT_TOKEN} characters"
+          echo "🔍 Debug - JWT token preview: ${JWT_TOKEN:0:50}..."
+          echo "🔍 Debug - API Key ID: $TESTER_KEY_ID"
+          echo "🔍 Debug - Issuer ID: $APP_STORE_CONNECT_ISSUER_ID"
+
+          # Test JWT token with a simple API call first
+          echo "🔍 Testing JWT token with simple API call..."
+          test_response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+            -H "Authorization: Bearer $JWT_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.appstoreconnect.apple.com/v1/apps?limit=1" 2>/dev/null)
+
+          test_status=$(echo "$test_response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
+          test_body=$(echo "$test_response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
+
+          echo "🔍 Debug - Test API call status: $test_status"
+          echo "🔍 Debug - Test API call response: $test_body"
+
+          if [[ "$test_status" != "200" ]]; then
+            echo "❌ JWT token test failed with status $test_status"
+            echo "💡 This indicates the JWT token is invalid or API key has issues"
+            echo "💡 Response: $test_body"
+            exit 1
+          else
+            echo "✅ JWT token test successful"
+          fi
+
           # Function to make authenticated API requests
           make_api_request() {
             local method="$1"
@@ -454,6 +482,36 @@ jobs:
               else
                 echo "⚠️ Tester not found globally, will need to be created: $email"
                 echo "💡 Make sure $email has a valid Apple ID"
+                
+                # For internal testing groups, we need to create App Store Connect users, not just beta testers
+                echo "🔍 Checking if user exists as App Store Connect team member..."
+                USER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/users?filter[username]=$email")
+                
+                # Debug: Show the user lookup response
+                echo "🔍 Debug - User lookup response:"
+                echo "$USER_RESPONSE"
+                
+                # Check for API errors in user lookup
+                if echo "$USER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+                  echo "❌ API Error during user lookup:"
+                  echo "$USER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+                  VALIDATION_FAILED=true
+                  continue
+                fi
+                
+                EXISTING_USER_ID=$(echo "$USER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+                
+                if [ -n "$EXISTING_USER_ID" ]; then
+                  echo "✅ User exists as App Store Connect team member: $email (ID: $EXISTING_USER_ID)"
+                  echo "💡 They can be added to internal testing groups"
+                else
+                  echo "⚠️ User not found as App Store Connect team member"
+                  echo "💡 For internal testing groups, users need to be invited as team members first"
+                  echo "💡 Will attempt to create App Store Connect user invitation..."
+                  
+                  # Note: Creating App Store Connect users requires Admin role, not just App Manager
+                  echo "🔍 This requires Admin role API key to create team member invitations"
+                fi
               fi
               
               echo ""
@@ -978,6 +1036,36 @@ jobs:
           if [ -z "$JWT_TOKEN" ]; then
             echo "❌ Failed to generate JWT token"
             exit 1
+          fi
+
+          echo "✅ JWT token generated successfully"
+
+          # Debug JWT token
+          echo "🔍 Debug - JWT token length: ${#JWT_TOKEN} characters"
+          echo "🔍 Debug - JWT token preview: ${JWT_TOKEN:0:50}..."
+          echo "🔍 Debug - API Key ID: $TESTER_KEY_ID"
+          echo "🔍 Debug - Issuer ID: $APP_STORE_CONNECT_ISSUER_ID"
+
+          # Test JWT token with a simple API call first
+          echo "🔍 Testing JWT token with simple API call..."
+          test_response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+            -H "Authorization: Bearer $JWT_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.appstoreconnect.apple.com/v1/apps?limit=1" 2>/dev/null)
+
+          test_status=$(echo "$test_response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
+          test_body=$(echo "$test_response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
+
+          echo "🔍 Debug - Test API call status: $test_status"
+          echo "🔍 Debug - Test API call response: $test_body"
+
+          if [[ "$test_status" != "200" ]]; then
+            echo "❌ JWT token test failed with status $test_status"
+            echo "💡 This indicates the JWT token is invalid or API key has issues"
+            echo "💡 Response: $test_body"
+            exit 1
+          else
+            echo "✅ JWT token test successful"
           fi
 
           # Function to make authenticated API requests
