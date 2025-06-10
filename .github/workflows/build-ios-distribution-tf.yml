@@ -429,90 +429,54 @@ jobs:
               fi
               
               # Check if tester exists globally or can be created
-              echo "🔍 Checking if tester exists globally..."
-              EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
-              
-              # Debug: Show the raw response first
-              echo "🔍 Debug - Raw API response:"
-              echo "$EXISTING_TESTER_RESPONSE"
-              echo "🔍 Debug - Response length: ${#EXISTING_TESTER_RESPONSE} characters"
-              
-              # Check if response is empty or curl failed
-              if [ -z "$EXISTING_TESTER_RESPONSE" ]; then
-                echo "❌ Empty response from API - this indicates a network or authentication issue"
-                echo "💡 Possible causes:"
-                echo "   - Network connectivity issues"
-                echo "   - API endpoint unreachable"
-                echo "   - Authentication token expired or invalid"
-                VALIDATION_FAILED=true
-                continue
-              fi
-              
-              # Check if response is valid JSON
-              if ! echo "$EXISTING_TESTER_RESPONSE" | jq . > /dev/null 2>&1; then
-                echo "❌ Invalid JSON response from API"
-                echo "🔍 Raw response: $EXISTING_TESTER_RESPONSE"
-                echo "💡 This might be an HTTP error or server issue"
-                VALIDATION_FAILED=true
-                continue
-              fi
-              
-              # Check for API errors in tester lookup
-              if echo "$EXISTING_TESTER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
-                echo "❌ API Error during tester lookup:"
-                echo "$EXISTING_TESTER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
-                echo "💡 Error code: $(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.errors[0].code // "No code"')"
-                echo "💡 This might be due to:"
-                echo "   - Invalid email format"
-                echo "   - Email not associated with an Apple ID"
-                echo "   - API key permissions"
-                echo "   - Rate limiting"
-                VALIDATION_FAILED=true
-                continue
-              fi
-              
-              EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
-              
-              # Debug: Show what we extracted
-              echo "🔍 Debug - Extracted tester ID: '$EXISTING_TESTER_ID'"
-              echo "🔍 Debug - Data array length: $(echo "$EXISTING_TESTER_RESPONSE" | jq '.data | length' 2>/dev/null || echo "0")"
-              
-              if [ -n "$EXISTING_TESTER_ID" ]; then
-                echo "✅ Tester exists and can be added: $email (ID: $EXISTING_TESTER_ID)"
-              else
-                echo "⚠️ Tester not found globally, will need to be created: $email"
-                echo "💡 Make sure $email has a valid Apple ID"
-                
-                # For internal testing groups, we need to create App Store Connect users, not just beta testers
-                echo "🔍 Checking if user exists as App Store Connect team member..."
-                USER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/users?filter[username]=$email")
-                
-                # Debug: Show the user lookup response
-                echo "🔍 Debug - User lookup response:"
-                echo "$USER_RESPONSE"
-                
-                # Check for API errors in user lookup
-                if echo "$USER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
-                  echo "❌ API Error during user lookup:"
-                  echo "$USER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
-                  VALIDATION_FAILED=true
-                  continue
-                fi
-                
-                EXISTING_USER_ID=$(echo "$USER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
-                
-                if [ -n "$EXISTING_USER_ID" ]; then
-                  echo "✅ User exists as App Store Connect team member: $email (ID: $EXISTING_USER_ID)"
-                  echo "💡 They can be added to internal testing groups"
-                else
-                  echo "⚠️ User not found as App Store Connect team member"
-                  echo "💡 For internal testing groups, users need to be invited as team members first"
-                  echo "💡 Will attempt to create App Store Connect user invitation..."
-                  
-                  # Note: Creating App Store Connect users requires Admin role, not just App Manager
-                  echo "🔍 This requires Admin role API key to create team member invitations"
-                fi
-              fi
+               echo "🔍 Checking if user exists as App Store Connect team member (for internal groups)..."
+               EXISTING_USER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/users?filter[username]=$email")
+               
+               # Debug: Show the raw response first
+               echo "🔍 Debug - Raw User API response:"
+               echo "$EXISTING_USER_RESPONSE"
+               echo "🔍 Debug - Response length: ${#EXISTING_USER_RESPONSE} characters"
+               
+               # Check if response is empty or curl failed
+               if [ -z "$EXISTING_USER_RESPONSE" ]; then
+                 echo "❌ Empty response from User API"
+                 VALIDATION_FAILED=true
+                 continue
+               fi
+               
+               # Check if response is valid JSON
+               if ! echo "$EXISTING_USER_RESPONSE" | jq . > /dev/null 2>&1; then
+                 echo "❌ Invalid JSON response from User API"
+                 echo "🔍 Raw response: $EXISTING_USER_RESPONSE"
+                 VALIDATION_FAILED=true
+                 continue
+               fi
+               
+               # Check for API errors in user lookup
+               if echo "$EXISTING_USER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+                 echo "❌ API Error during user lookup:"
+                 echo "$EXISTING_USER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+                 echo "💡 Error code: $(echo "$EXISTING_USER_RESPONSE" | jq -r '.errors[0].code // "No code"')"
+                 VALIDATION_FAILED=true
+                 continue
+               fi
+               
+               EXISTING_USER_ID=$(echo "$EXISTING_USER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+               
+               # Debug: Show what we extracted
+               echo "🔍 Debug - Extracted user ID: '$EXISTING_USER_ID'"
+               echo "🔍 Debug - Data array length: $(echo "$EXISTING_USER_RESPONSE" | jq '.data | length' 2>/dev/null || echo "0")"
+               
+               if [ -n "$EXISTING_USER_ID" ]; then
+                 echo "✅ User exists as App Store Connect team member: $email (ID: $EXISTING_USER_ID)"
+                 echo "💡 They can be added to internal testing groups"
+               else
+                 echo "❌ User not found as App Store Connect team member"
+                 echo "💡 For internal testing groups, users must be team members first"
+                 echo "💡 Please invite $email as a team member in App Store Connect"
+                 VALIDATION_FAILED=true
+                 continue
+               fi
               
               echo ""
             done <<< "$TESTERS_TO_ADD"
