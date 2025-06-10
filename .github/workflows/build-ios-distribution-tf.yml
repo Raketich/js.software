@@ -20,295 +20,99 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Early validation: Test both API keys before building
-      - name: Validate App Store Connect API Keys
+      # Early API Key Validation - Fast fail if credentials are invalid
+      - name: Validate API Keys (Fast Fail)
         env:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
           APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
           APP_STORE_CONNECT_TESTER_API_KEY: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}
-          BUNDLE_ID: software.js.ui # Use known bundle ID for early validation
         run: |
-          echo "🔍 Early validation: Testing both App Store Connect API keys..."
+          echo "🔍 Early validation: Testing API keys to avoid wasting CI time..."
 
-          # Check if required API keys are available
+          # Check if required secrets exist
           if [ -z "$APP_STORE_CONNECT_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_API_KEY" ]; then
-            echo "❌ Developer API key not configured for uploads"
-            echo "💡 Please set APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_KEY secrets"
+            echo "❌ Developer API key not configured"
+            echo "💡 Set APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_KEY secrets"
             exit 1
           fi
 
-          echo "✅ Developer API key secrets are configured"
-          echo "🔑 Developer API Key ID: $APP_STORE_CONNECT_API_KEY_ID"
-
-          # Check tester management key only if testers are configured
-          if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
-            if [ -z "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
-              echo "❌ App Manager API key not configured for tester management"
-              echo "💡 Please set APP_STORE_CONNECT_TESTER_API_KEY_ID and APP_STORE_CONNECT_TESTER_API_KEY secrets"
-              exit 1
-            fi
-            echo "✅ App Manager API key secrets are configured"
-            echo "🔑 App Manager API Key ID: $APP_STORE_CONNECT_TESTER_API_KEY_ID"
-            echo "👥 Testers configured: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}"
-          else
-            echo "ℹ️ No testers configured - skipping App Manager key validation"
-          fi
-
-          # Install Fastlane for API validation
-          echo "📦 Installing Fastlane for API validation..."
+          # Install Fastlane for comprehensive validation
+          echo "📦 Installing Fastlane for API validation (~30s)..."
           sudo gem install fastlane --no-document
 
-          # Create API key files for validation
+          # Setup API key files
           mkdir -p ~/.appstoreconnect/private_keys
-
-          # Developer key
           echo "$APP_STORE_CONNECT_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
 
-          # App Manager key (if tester management is enabled)
+          # Test tester management key if configured
           if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
+            if [ -z "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
+              echo "❌ Tester management configured but API key missing"
+              exit 1
+            fi
             echo "$APP_STORE_CONNECT_TESTER_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
             chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
           fi
 
-          # Verify API key files were created correctly
-          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8 ]; then
-            echo "❌ Failed to create Developer API key file"
-            exit 1
-          fi
-          echo "✅ Developer API key file created successfully"
-          echo "📏 Developer key size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8) bytes"
+          # Create minimal test Fastfile
+          cat > /tmp/test_validation.rb << 'EOF'
+          require 'fastlane'
 
-          if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
-            if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8 ]; then
-              echo "❌ Failed to create App Manager API key file"
-              exit 1
-            fi
-            echo "✅ App Manager API key file created successfully"
-            echo "📏 App Manager key size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8) bytes"
-          fi
-
-          # Create minimal Fastlane setup for API validation
-          mkdir -p fastlane
-
-          cat > fastlane/Fastfile << 'EOF'
-          opt_out_usage
-
-          default_platform(:ios)
-
-          platform :ios do
-            desc "Validate Developer API key for uploads"
-            lane :validate_developer_api do
-              puts "🔍 Validating Developer API key for TestFlight uploads..."
-              
-              # Get values from environment
-              key_id = ENV["APP_STORE_CONNECT_API_KEY_ID"]
-              issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
-              bundle_id = ENV["BUNDLE_ID"]
-              
-              puts "🔑 Developer Key ID: #{key_id}"
-              puts "🆔 Issuer ID: #{issuer_id}"
-              puts "📱 Bundle ID: #{bundle_id}"
-              
-              if key_id.nil? || key_id.empty?
-                puts "❌ APP_STORE_CONNECT_API_KEY_ID is not set or empty"
-                raise "Missing required environment variable: APP_STORE_CONNECT_API_KEY_ID"
-              end
-              
-              begin
-                puts "🔍 Testing Developer API key configuration..."
-                
-                # Validate API key file exists and is readable
-                key_file = "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-                unless File.exist?(key_file) && File.readable?(key_file)
-                  raise "API key file not found or not readable: #{key_file}"
-                end
-                
-                puts "✅ Developer API key file is accessible"
-                puts "🔑 Key file: #{key_file}"
-                puts "📏 Key file size: #{File.size(key_file)} bytes"
-                
-                # Test upload permissions using upload_to_testflight (dry run)
-                begin
-                  puts "🔄 Testing upload permissions with upload_to_testflight..."
-                  
-                  # Use direct api_key parameter to avoid hash/string conflicts
-                  upload_to_testflight(
-                    app_identifier: bundle_id,
-                    api_key: {
-                      key_id: key_id,
-                      issuer_id: issuer_id,
-                      key_filepath: key_file
-                    },
-                    skip_submission: true,
-                    skip_waiting_for_build_processing: true
-                  )
-                  
-                  puts "✅ Upload_to_testflight validation successful"
-                  
-                rescue => upload_error
-                  # Expected to fail without IPA, but should NOT fail with auth errors
-                  error_message = upload_error.message.downcase
-                  
-                  if error_message.include?("unauthorized") || 
-                     error_message.include?("forbidden") || 
-                     error_message.include?("invalid") ||
-                     error_message.include?("authentication") ||
-                     error_message.include?("provider does not exist")
-                    puts "❌ Developer API authentication failed: #{upload_error.message}"
-                    raise "Developer API key authentication failed - check credentials and permissions"
-                  elsif error_message.include?("ipa") || error_message.include?("file") || error_message.include?("build")
-                    puts "✅ Developer API key authentication succeeded (expected upload error: no IPA provided)"
-                  else
-                    puts "✅ Developer API key authentication succeeded (expected error: #{upload_error.message})"
-                  end
-                end
-                
-                puts "🎉 Developer API key validation completed!"
-                puts "💡 Developer API key is properly configured for uploads"
-                
-              rescue => e
-                puts "❌ Developer API validation failed: #{e.message}"
-                puts "💡 Check your APP_STORE_CONNECT_API_KEY credentials"
-                puts "💡 Ensure the API key has Developer role and app access"
-                raise e
-              end
-            end
+          # Test Developer API key
+          puts "🔑 Testing Developer API key..."
+          begin
+            api_key = Fastlane::Helper::AppStoreConnectApiHelper.load_api_key({
+              key_id: ENV["APP_STORE_CONNECT_API_KEY_ID"],
+              issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
+              key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV["APP_STORE_CONNECT_API_KEY_ID"]}.p8"
+            })
             
-            desc "Validate App Manager API key for tester management"
-            lane :validate_tester_api do
-              puts "🔍 Validating App Manager API key for tester management..."
+            # Test by fetching apps (lightweight API call)
+            require 'spaceship'
+            Spaceship::ConnectAPI.token = api_key
+            apps = Spaceship::ConnectAPI.get_apps(limit: 1)
+            puts "✅ Developer API key works (can access #{apps.count} apps)"
+          rescue => e
+            puts "❌ Developer API key failed: #{e.message}"
+            exit 1
+          end
+
+          # Test Tester Management API key if configured
+          if ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]
+            puts "🔑 Testing App Manager API key..."
+            begin
+              tester_api_key = Fastlane::Helper::AppStoreConnectApiHelper.load_api_key({
+                key_id: ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"],
+                issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
+                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]}.p8"
+              })
               
-              # Get values from environment
-              key_id = ENV["APP_STORE_CONNECT_TESTER_API_KEY_ID"]
-              issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
-              bundle_id = ENV["BUNDLE_ID"]
-              
-              puts "🔑 App Manager Key ID: #{key_id}"
-              puts "🆔 Issuer ID: #{issuer_id}"
-              puts "📱 Bundle ID: #{bundle_id}"
-              
-              if key_id.nil? || key_id.empty?
-                puts "❌ APP_STORE_CONNECT_TESTER_API_KEY_ID is not set or empty"
-                raise "Missing required environment variable: APP_STORE_CONNECT_TESTER_API_KEY_ID"
-              end
-              
-              begin
-                puts "🔍 Testing App Manager API key configuration..."
-                
-                # Validate API key file exists and is readable
-                key_file = "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-                unless File.exist?(key_file) && File.readable?(key_file)
-                  raise "API key file not found or not readable: #{key_file}"
-                end
-                
-                puts "✅ App Manager API key file is accessible"
-                puts "🔑 Key file: #{key_file}"
-                puts "📏 Key file size: #{File.size(key_file)} bytes"
-                
-                # Test tester management permissions using pilot
-                begin
-                  puts "🔄 Testing tester management permissions with pilot..."
-                  
-                  # Use direct api_key parameter to avoid hash/string conflicts
-                  pilot(
-                    app_identifier: bundle_id,
-                    api_key: {
-                      key_id: key_id,
-                      issuer_id: issuer_id,
-                      key_filepath: key_file
-                    },
-                    skip_submission: true,
-                    skip_waiting_for_build_processing: true
-                  )
-                  
-                  puts "✅ Pilot validation successful"
-                  
-                rescue => pilot_error
-                  # Expected to fail without builds, but should NOT fail with auth errors
-                  error_message = pilot_error.message.downcase
-                  
-                  if error_message.include?("unauthorized") || 
-                     error_message.include?("forbidden") || 
-                     error_message.include?("invalid") ||
-                     error_message.include?("authentication")
-                    puts "❌ App Manager API authentication failed: #{pilot_error.message}"
-                    raise "App Manager API key authentication failed - check credentials and App Manager role"
-                  else
-                    puts "✅ App Manager API key authentication succeeded (expected pilot error: #{pilot_error.message})"
-                  end
-                end
-                
-                puts "🎉 App Manager API key validation completed!"
-                puts "💡 App Manager API key is properly configured for tester management"
-                
-              rescue => e
-                puts "❌ App Manager API validation failed: #{e.message}"
-                puts "💡 Check your APP_STORE_CONNECT_TESTER_API_KEY credentials"
-                puts "💡 Ensure the API key has App Manager role in App Store Connect"
-                raise e
-              end
+              Spaceship::ConnectAPI.token = tester_api_key
+              groups = Spaceship::ConnectAPI.get_beta_groups(limit: 1)
+              puts "✅ App Manager API key works (can access #{groups.count} beta groups)"
+            rescue => e
+              puts "❌ App Manager API key failed: #{e.message}"
+              exit 1
             end
           end
+
+          puts "🎉 All API keys validated successfully!"
           EOF
 
-          # Create Appfile
-          cat > fastlane/Appfile << EOF
-          app_identifier("$BUNDLE_ID")
-          EOF
-
-          # Export environment variables for Fastlane
-          export APP_STORE_CONNECT_API_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID"
-          export APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
-          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
-          export BUNDLE_ID="$BUNDLE_ID"
-
-          echo "🔍 Debug: Environment variables:"
-          echo "   APP_STORE_CONNECT_API_KEY_ID: $APP_STORE_CONNECT_API_KEY_ID"
-          echo "   APP_STORE_CONNECT_TESTER_API_KEY_ID: $APP_STORE_CONNECT_TESTER_API_KEY_ID"
-          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
-          echo "   BUNDLE_ID: $BUNDLE_ID"
-
-          # Run validations
-          echo "🚀 Testing Developer API key..."
-          if APP_STORE_CONNECT_API_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID" \
-             APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID" \
-             BUNDLE_ID="$BUNDLE_ID" \
-             fastlane ios validate_developer_api; then
-            echo "🎉 Developer API key validation passed!"
+          # Run validation
+          if ruby /tmp/test_validation.rb; then
+            echo "✅ API validation passed - proceeding with build"
           else
-            echo "❌ Developer API key validation failed"
-            echo "🛑 Stopping workflow to avoid wasting CI time"
+            echo "❌ API validation failed - stopping to save CI time"
             exit 1
           fi
 
-          # Test App Manager key only if testers are configured
-          if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
-            echo "🚀 Testing App Manager API key..."
-            if APP_STORE_CONNECT_TESTER_API_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID" \
-               APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID" \
-               BUNDLE_ID="$BUNDLE_ID" \
-               fastlane ios validate_tester_api; then
-              echo "🎉 App Manager API key validation passed!"
-            else
-              echo "❌ App Manager API key validation failed"
-              echo "🛑 Stopping workflow to avoid wasting CI time"
-              exit 1
-            fi
-          else
-            echo "ℹ️ Skipping App Manager API key validation (no testers configured)"
-          fi
-
-          # Clean up validation files
-          rm -rf fastlane
-          rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
-          if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
-            rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
-          fi
-
-          echo "✅ Early validation completed successfully - both API keys are working!"
+          # Cleanup
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_*.p8
+          rm -f /tmp/test_validation.rb
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -739,136 +543,8 @@ jobs:
           echo "📏 File size: $(ls -lh "${{ env.IPA_PATH }}" | awk '{print $5}')"
           echo "🔐 File permissions: $(ls -l "${{ env.IPA_PATH }}" | awk '{print $1}')"
 
-      # Upload to TestFlight using xcrun altool (fallback from buggy Fastlane)
-      - name: Upload to TestFlight using xcrun altool
-        env:
-          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
-          APP_STORE_CONNECT_TESTER_API_KEY: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}
-          BUNDLE_ID: ${{ env.BUNDLE_ID }}
-          IPA_PATH: ${{ env.IPA_PATH }}
-          APP_NAME: ${{ env.APP_NAME }}
-          MARKETING_VERSION: ${{ env.MARKETING_VERSION }}
-          BUNDLE_VERSION: ${{ env.BUNDLE_VERSION }}
-        run: |
-          echo "🚀 Uploading to TestFlight using xcrun altool (Apple's direct tool)..."
-          echo "🔑 Developer API Key ID: $APP_STORE_CONNECT_API_KEY_ID"
-
-          # Check if required secrets are available
-          if [ -z "$APP_STORE_CONNECT_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_API_KEY" ]; then
-            echo "❌ Developer API key not configured for uploads"
-            echo "💡 Please check APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_KEY secrets"
-            exit 1
-          fi
-
-          # Setup API key files for altool (altool expects them in a specific location)
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "$APP_STORE_CONNECT_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
-          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
-
-          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8 ]; then
-            echo "❌ Failed to create Developer API key file for altool"
-            exit 1
-          fi
-
-          echo "✅ Developer API key file setup complete"
-          echo "📏 Key file size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8) bytes"
-
-          # Setup App Manager key as backup if available
-          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] && [ -n "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
-            echo "$APP_STORE_CONNECT_TESTER_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
-            chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
-            echo "✅ App Manager API key file also setup as backup"
-          fi
-
-          # Generate release notes
-          CUSTOM_NOTES="${{ github.event.inputs.release_notes }}"
-          if [ -n "$CUSTOM_NOTES" ]; then
-            RELEASE_NOTES="$CUSTOM_NOTES"
-          else
-            RELEASE_NOTES="🚀 New $APP_NAME iOS Build - Version $MARKETING_VERSION (Build $BUNDLE_VERSION)
-
-          📱 Built from: ${{ github.ref_name }}
-          🔗 Commit: ${{ github.sha }}
-          👤 Author: ${{ github.actor }}
-          🏃 Build Number: ${{ github.run_number }}
-
-          📝 Changes in this build:
-          ${{ github.event.head_commit.message }}
-
-          💾 Download from TestFlight to test the latest features!"
-          fi
-
-          # Verify IPA file exists
-          if [ ! -f "$IPA_PATH" ]; then
-            echo "❌ IPA file not found at: $IPA_PATH"
-            exit 1
-          fi
-
-          echo "✅ IPA file verified: $IPA_PATH"
-          echo "📏 IPA file size: $(ls -lh "$IPA_PATH" | awk '{print $5}')"
-
-          # Function to try altool upload with a specific API key
-          try_altool_upload() {
-            local api_key_id=$1
-            local description=$2
-            
-            echo "🔄 Trying altool upload with $description (Key ID: $api_key_id)..."
-            
-            # Run xcrun altool upload
-            if xcrun altool \
-              --upload-app \
-              --file "$IPA_PATH" \
-              --type ios \
-              --apiKey "$api_key_id" \
-              --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
-              --verbose; then
-              
-              echo "🎉 Successfully uploaded to TestFlight with $description!"
-              return 0
-            else
-              echo "❌ Upload failed with $description"
-              return 1
-            fi
-          }
-
-          # Try upload with Developer key first
-          echo "🚀 Starting TestFlight upload with Developer API key..."
-          UPLOAD_SUCCESS=false
-
-          if try_altool_upload "$APP_STORE_CONNECT_API_KEY_ID" "Developer key"; then
-            UPLOAD_SUCCESS=true
-          elif [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
-            echo "🔄 Trying fallback with App Manager key..."
-            if try_altool_upload "$APP_STORE_CONNECT_TESTER_API_KEY_ID" "App Manager key"; then
-              UPLOAD_SUCCESS=true
-            fi
-          fi
-
-          if [ "$UPLOAD_SUCCESS" = false ]; then
-            echo "❌ All upload attempts failed"
-            echo "💡 Check your API keys and permissions"
-            echo "💡 Ensure your API keys have the correct roles:"
-            echo "   - Developer key: Developer role"
-            echo "   - App Manager key: App Manager role"
-            exit 1
-          fi
-
-          # Clean up API key files
-          rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
-          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
-            rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
-          fi
-
-          echo "🧹 Cleanup completed"
-          echo "✅ Upload to TestFlight completed successfully!"
-          echo "⏱️  Build will be available for internal testing in 5-15 minutes"
-          echo "🔗 Check status: https://appstoreconnect.apple.com/apps"
-
-      # Manage TestFlight Internal Testers using Direct App Store Connect API
-      - name: Manage TestFlight Internal Testers (Direct API)
+      # Manage TestFlight Internal Testers using Direct API (Before Upload)
+      - name: Manage TestFlight Internal Testers (Group-Based)
         if: vars.TESTFLIGHT_INTERNAL_TESTERS # Enable step only if testers are configured
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -879,7 +555,7 @@ jobs:
           BUNDLE_ID: ${{ env.BUNDLE_ID }}
           TESTFLIGHT_TESTERS: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}
         run: |
-          echo "🚀 Managing TestFlight testers using direct App Store Connect API..."
+          echo "🚀 Managing TestFlight testers using group-based approach (before upload)..."
 
           # Check if tester management API key is available
           if [ -z "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
@@ -1223,7 +899,135 @@ jobs:
           rm -f ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
           rm -f /tmp/generate_jwt.py
 
-          echo "🎯 Group-based TestFlight tester management finished"
+          echo "🎯 Group-based TestFlight tester management completed (ready for upload)"
+
+      # Upload to TestFlight using xcrun altool
+      - name: Upload to TestFlight using xcrun altool
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
+          APP_STORE_CONNECT_TESTER_API_KEY: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}
+          BUNDLE_ID: ${{ env.BUNDLE_ID }}
+          IPA_PATH: ${{ env.IPA_PATH }}
+          APP_NAME: ${{ env.APP_NAME }}
+          MARKETING_VERSION: ${{ env.MARKETING_VERSION }}
+          BUNDLE_VERSION: ${{ env.BUNDLE_VERSION }}
+        run: |
+          echo "🚀 Uploading to TestFlight using xcrun altool (Apple's direct tool)..."
+          echo "🔑 Developer API Key ID: $APP_STORE_CONNECT_API_KEY_ID"
+
+          # Check if required secrets are available
+          if [ -z "$APP_STORE_CONNECT_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_API_KEY" ]; then
+            echo "❌ Developer API key not configured for uploads"
+            echo "💡 Please check APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_KEY secrets"
+            exit 1
+          fi
+
+          # Setup API key files for altool (altool expects them in a specific location)
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APP_STORE_CONNECT_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
+
+          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8 ]; then
+            echo "❌ Failed to create Developer API key file for altool"
+            exit 1
+          fi
+
+          echo "✅ Developer API key file setup complete"
+          echo "📏 Key file size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8) bytes"
+
+          # Setup App Manager key as backup if available
+          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] && [ -n "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
+            echo "$APP_STORE_CONNECT_TESTER_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
+            chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
+            echo "✅ App Manager API key file also setup as backup"
+          fi
+
+          # Generate release notes
+          CUSTOM_NOTES="${{ github.event.inputs.release_notes }}"
+          if [ -n "$CUSTOM_NOTES" ]; then
+            RELEASE_NOTES="$CUSTOM_NOTES"
+          else
+            RELEASE_NOTES="🚀 New $APP_NAME iOS Build - Version $MARKETING_VERSION (Build $BUNDLE_VERSION)
+
+          📱 Built from: ${{ github.ref_name }}
+          🔗 Commit: ${{ github.sha }}
+          👤 Author: ${{ github.actor }}
+          🏃 Build Number: ${{ github.run_number }}
+
+          📝 Changes in this build:
+          ${{ github.event.head_commit.message }}
+
+          💾 Download from TestFlight to test the latest features!"
+          fi
+
+          # Verify IPA file exists
+          if [ ! -f "$IPA_PATH" ]; then
+            echo "❌ IPA file not found at: $IPA_PATH"
+            exit 1
+          fi
+
+          echo "✅ IPA file verified: $IPA_PATH"
+          echo "📏 IPA file size: $(ls -lh "$IPA_PATH" | awk '{print $5}')"
+
+          # Function to try altool upload with a specific API key
+          try_altool_upload() {
+            local api_key_id=$1
+            local description=$2
+            
+            echo "🔄 Trying altool upload with $description (Key ID: $api_key_id)..."
+            
+            # Run xcrun altool upload
+            if xcrun altool \
+              --upload-app \
+              --file "$IPA_PATH" \
+              --type ios \
+              --apiKey "$api_key_id" \
+              --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+              --verbose; then
+              
+              echo "🎉 Successfully uploaded to TestFlight with $description!"
+              return 0
+            else
+              echo "❌ Upload failed with $description"
+              return 1
+            fi
+          }
+
+          # Try upload with Developer key first
+          echo "🚀 Starting TestFlight upload with Developer API key..."
+          UPLOAD_SUCCESS=false
+
+          if try_altool_upload "$APP_STORE_CONNECT_API_KEY_ID" "Developer key"; then
+            UPLOAD_SUCCESS=true
+          elif [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
+            echo "🔄 Trying fallback with App Manager key..."
+            if try_altool_upload "$APP_STORE_CONNECT_TESTER_API_KEY_ID" "App Manager key"; then
+              UPLOAD_SUCCESS=true
+            fi
+          fi
+
+          if [ "$UPLOAD_SUCCESS" = false ]; then
+            echo "❌ All upload attempts failed"
+            echo "💡 Check your API keys and permissions"
+            echo "💡 Ensure your API keys have the correct roles:"
+            echo "   - Developer key: Developer role"
+            echo "   - App Manager key: App Manager role"
+            exit 1
+          fi
+
+          # Clean up API key files
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_API_KEY_ID.p8
+          if [ -n "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ]; then
+            rm -f ~/.appstoreconnect/private_keys/AuthKey_$APP_STORE_CONNECT_TESTER_API_KEY_ID.p8
+          fi
+
+          echo "🧹 Cleanup completed"
+          echo "✅ Upload to TestFlight completed successfully!"
+          echo "⏱️  Build will be available for internal testing in 5-15 minutes"
+          echo "🔗 Check status: https://appstoreconnect.apple.com/apps"
 
       # Upload IPA as artifact backup
       - name: Upload IPA artifact
