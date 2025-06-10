@@ -973,7 +973,7 @@ jobs:
 
           # Install PyJWT if needed
           echo "📦 Installing PyJWT for token generation..."
-          python3 -m pip install PyJWT cryptography
+          python3 -m pip install PyJWT cryptography --break-system-packages
 
           # Generate JWT token
           echo "🔐 Generating JWT token..."
