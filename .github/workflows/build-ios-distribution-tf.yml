@@ -414,12 +414,14 @@ jobs:
             # Validate each tester early (don't add yet, just check)
             echo ""
             echo "🔍 Early validation of new testers..."
+            echo "💡 App Manager role cannot query users/testers globally"
+            echo "💡 Will attempt to add users directly and handle any errors"
             
             VALIDATION_FAILED=false
             while read -r email; do
               [ -z "$email" ] && continue
               
-              echo "👤 Validating: $email"
+              echo "👤 Preparing to add: $email"
               
               # Validate email format
               if [[ ! "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
@@ -428,69 +430,17 @@ jobs:
                 continue
               fi
               
-              # Check if tester exists globally or can be created
-               echo "🔍 Checking if user exists as App Store Connect team member (for internal groups)..."
-               EXISTING_USER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/users?filter[username]=$email")
-               
-               # Debug: Show the raw response first
-               echo "🔍 Debug - Raw User API response:"
-               echo "$EXISTING_USER_RESPONSE"
-               echo "🔍 Debug - Response length: ${#EXISTING_USER_RESPONSE} characters"
-               
-               # Check if response is empty or curl failed
-               if [ -z "$EXISTING_USER_RESPONSE" ]; then
-                 echo "❌ Empty response from User API"
-                 VALIDATION_FAILED=true
-                 continue
-               fi
-               
-               # Check if response is valid JSON
-               if ! echo "$EXISTING_USER_RESPONSE" | jq . > /dev/null 2>&1; then
-                 echo "❌ Invalid JSON response from User API"
-                 echo "🔍 Raw response: $EXISTING_USER_RESPONSE"
-                 VALIDATION_FAILED=true
-                 continue
-               fi
-               
-               # Check for API errors in user lookup
-               if echo "$EXISTING_USER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
-                 echo "❌ API Error during user lookup:"
-                 echo "$EXISTING_USER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
-                 echo "💡 Error code: $(echo "$EXISTING_USER_RESPONSE" | jq -r '.errors[0].code // "No code"')"
-                 VALIDATION_FAILED=true
-                 continue
-               fi
-               
-               EXISTING_USER_ID=$(echo "$EXISTING_USER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
-               
-               # Debug: Show what we extracted
-               echo "🔍 Debug - Extracted user ID: '$EXISTING_USER_ID'"
-               echo "🔍 Debug - Data array length: $(echo "$EXISTING_USER_RESPONSE" | jq '.data | length' 2>/dev/null || echo "0")"
-               
-               if [ -n "$EXISTING_USER_ID" ]; then
-                 echo "✅ User exists as App Store Connect team member: $email (ID: $EXISTING_USER_ID)"
-                 echo "💡 They can be added to internal testing groups"
-               else
-                 echo "❌ User not found as App Store Connect team member"
-                 echo "💡 For internal testing groups, users must be team members first"
-                 echo "💡 Please invite $email as a team member in App Store Connect"
-                 VALIDATION_FAILED=true
-                 continue
-               fi
-              
+              echo "✅ Email format valid: $email"
+              echo "💡 Will attempt to add to group after build (API will validate eligibility)"
               echo ""
             done <<< "$TESTERS_TO_ADD"
             
             if [ "$VALIDATION_FAILED" = true ]; then
-              echo "❌ Tester validation failed - fix the issues above before building"
-              echo "💡 Common fixes:"
-              echo "   1. Ensure all emails have valid Apple IDs"
-              echo "   2. Check email formats are correct"
-              echo "   3. Verify API key permissions"
+              echo "❌ Email format validation failed - fix the issues above"
               exit 1
             else
-              echo "✅ All new testers validated successfully"
-              echo "🎯 They will be added after the build completes"
+              echo "✅ All email formats validated successfully"
+              echo "🎯 Users will be added to group after build (with proper error handling)"
             fi
           else
             echo "➕ No new testers to add"
@@ -1081,12 +1031,22 @@ jobs:
             
             echo "👤 Adding: $email"
             
-            # Check if tester exists globally
+            # First, try to find if user already exists as a beta tester
+            echo "🔍 Checking if user is already a beta tester..."
             EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
-            EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+            
+            # Check for API errors in tester lookup
+            if echo "$EXISTING_TESTER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+              echo "⚠️ Cannot query existing beta testers:"
+              echo "$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"')"
+              echo "💡 This is normal for App Manager role - proceeding with direct addition"
+              EXISTING_TESTER_ID=""
+            else
+              EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+            fi
             
             if [ -n "$EXISTING_TESTER_ID" ]; then
-              echo "✅ Tester exists with ID: $EXISTING_TESTER_ID"
+              echo "✅ User exists as beta tester with ID: $EXISTING_TESTER_ID"
               
               # Add existing tester to group
               ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$EXISTING_TESTER_ID\"}]}"
@@ -1094,35 +1054,72 @@ jobs:
               
               if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
                 ERROR_CODE=$(echo "$ADD_RESPONSE" | jq -r '.errors[0].code // ""')
-                if [[ "$ERROR_CODE" == *"ALREADY"* || "$ERROR_CODE" == *"EXISTS"* ]]; then
-                  echo "✅ Tester was already in the group - this is okay"
+                ERROR_DETAIL=$(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')
+                
+                if [[ "$ERROR_CODE" == *"ALREADY"* || "$ERROR_CODE" == *"EXISTS"* || "$ERROR_DETAIL" == *"already"* ]]; then
+                  echo "✅ User was already in the group - this is okay"
                   SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
                 else
-                  echo "❌ Failed to add tester: $(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
+                  echo "❌ Failed to add existing beta tester to group:"
+                  echo "   Error: $ERROR_DETAIL"
+                  echo "   Code: $ERROR_CODE"
                 fi
               else
-                echo "✅ Successfully added tester to group"
+                echo "✅ Successfully added existing beta tester to group"
                 SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
               fi
             else
-              echo "🔄 Creating new tester..."
+              echo "🔄 User not found as existing beta tester - attempting to create and add..."
               
-              # Create new beta tester
+              # Try to create new beta tester and add to group
               CREATE_TESTER_DATA="{\"data\":{\"type\":\"betaTesters\",\"attributes\":{\"email\":\"$email\",\"firstName\":\"Beta\",\"lastName\":\"Tester\"}}}"
               CREATE_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaTesters" "$CREATE_TESTER_DATA")
               
               if echo "$CREATE_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
                 ERROR_CODE=$(echo "$CREATE_RESPONSE" | jq -r '.errors[0].code // ""')
-                if [[ "$ERROR_CODE" == *"ALREADY"* || "$ERROR_CODE" == *"EXISTS"* ]]; then
-                  echo "✅ Tester already exists - this is okay"
-                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                ERROR_DETAIL=$(echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')
+                
+                echo "❌ Cannot create beta tester:"
+                echo "   Error: $ERROR_DETAIL"
+                echo "   Code: $ERROR_CODE"
+                echo ""
+                echo "💡 Possible reasons and solutions:"
+                
+                if [[ "$ERROR_CODE" == *"FORBIDDEN"* || "$ERROR_CODE" == *"ACCESS"* ]]; then
+                  echo "   🔑 API key doesn't have permission to create beta testers"
+                  echo "   ➡️ Add $email manually in App Store Connect"
+                elif [[ "$ERROR_CODE" == *"INVALID"* || "$ERROR_DETAIL" == *"Apple ID"* ]]; then
+                  echo "   📧 $email doesn't have a valid Apple ID"
+                  echo "   ➡️ Ask them to create an Apple ID first"
+                elif [[ "$ERROR_CODE" == *"ALREADY"* || "$ERROR_CODE" == *"EXISTS"* ]]; then
+                  echo "   ✅ User already exists as a beta tester"
+                  echo "   ➡️ Trying to add them to the group directly..."
+                  
+                  # If user exists, try to find them and add to group
+                  echo "🔄 Re-attempting to find existing user..."
+                  RETRY_FIND_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
+                  RETRY_TESTER_ID=$(echo "$RETRY_FIND_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+                  
+                  if [ -n "$RETRY_TESTER_ID" ]; then
+                    echo "✅ Found existing user with ID: $RETRY_TESTER_ID"
+                    ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$RETRY_TESTER_ID\"}]}"
+                    RETRY_ADD_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/relationships/betaTesters" "$ADD_TO_GROUP_DATA")
+                    
+                    if echo "$RETRY_ADD_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+                      echo "❌ Still failed to add to group: $(echo "$RETRY_ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
+                    else
+                      echo "✅ Successfully added existing user to group"
+                      SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                    fi
+                  fi
                 else
-                  echo "❌ Failed to create tester: $(echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
+                  echo "   ❓ Unexpected error - check App Store Connect manually"
+                  echo "   ➡️ Try adding $email manually in App Store Connect → TestFlight"
                 fi
               else
                 NEW_TESTER_ID=$(echo "$CREATE_RESPONSE" | jq -r '.data.id // empty')
                 if [ -n "$NEW_TESTER_ID" ]; then
-                  echo "✅ Successfully created tester with ID: $NEW_TESTER_ID"
+                  echo "✅ Successfully created beta tester with ID: $NEW_TESTER_ID"
                   
                   # Add new tester to group
                   ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$NEW_TESTER_ID\"}]}"
@@ -1143,6 +1140,19 @@ jobs:
 
           echo "🎉 Tester addition completed!"
           echo "✅ Successfully processed: $SUCCESS_COUNT/$TOTAL_OPERATIONS operations"
+
+          if [ $SUCCESS_COUNT -lt $TOTAL_OPERATIONS ]; then
+            echo ""
+            echo "💡 Some testers couldn't be added automatically. Common reasons:"
+            echo "   • Email doesn't have an Apple ID"
+            echo "   • API key permissions are limited"
+            echo "   • User needs to be invited to your team first"
+            echo ""
+            echo "🔗 Manually add remaining testers:"
+            echo "   1. Go to App Store Connect → TestFlight"
+            echo "   2. Find your app → Internal Testing"
+            echo "   3. Add testers to the 'js.s team' group"
+          fi
 
           # Clean up
           rm -f ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
