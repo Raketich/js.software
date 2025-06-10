@@ -820,7 +820,7 @@ jobs:
           default_platform(:ios)
 
           platform :ios do
-            desc "Upload IPA to TestFlight using api_key hash parameter"
+            desc "Upload IPA to TestFlight using environment variables (workaround for Fastlane bug)"
             lane :upload_testflight do
               puts "🚀 Uploading to TestFlight using Fastlane..."
               
@@ -848,17 +848,17 @@ jobs:
               puts "✅ API key file verified: #{key_file} (#{File.size(key_file)} bytes)"
               
               begin
-                puts "🔄 Starting TestFlight upload with Developer key using api_key hash..."
+                puts "🔄 Starting TestFlight upload using environment variables (Fastlane bug workaround)..."
                 
-                # Use api_key parameter directly as a hash (not the global action)
+                # Workaround: Set environment variables that Fastlane recognizes automatically
+                # This avoids the api_key parameter bug
+                ENV["APP_STORE_CONNECT_API_KEY_PATH"] = key_file
+                ENV["APP_STORE_CONNECT_API_KEY_ID"] = key_id
+                ENV["APP_STORE_CONNECT_ISSUER_ID"] = issuer_id
+                
                 upload_to_testflight(
                   ipa: ipa_path,
                   app_identifier: bundle_id,
-                  api_key: {
-                    key_id: key_id,
-                    issuer_id: issuer_id,
-                    key_filepath: key_file
-                  },
                   skip_submission: false,
                   skip_waiting_for_build_processing: true,
                   notify_external_testers: false,
@@ -880,16 +880,16 @@ jobs:
                   
                   if File.exist?(fallback_key_file)
                     begin
-                      puts "🔄 Starting TestFlight upload with App Manager key using api_key hash..."
+                      puts "🔄 Starting TestFlight upload with App Manager key using environment variables..."
+                      
+                      # Set environment variables for App Manager key
+                      ENV["APP_STORE_CONNECT_API_KEY_PATH"] = fallback_key_file
+                      ENV["APP_STORE_CONNECT_API_KEY_ID"] = fallback_key_id
+                      ENV["APP_STORE_CONNECT_ISSUER_ID"] = issuer_id
                       
                       upload_to_testflight(
                         ipa: ipa_path,
                         app_identifier: bundle_id,
-                        api_key: {
-                          key_id: fallback_key_id,
-                          issuer_id: issuer_id,
-                          key_filepath: fallback_key_file
-                        },
                         skip_submission: false,
                         skip_waiting_for_build_processing: true,
                         notify_external_testers: false,
