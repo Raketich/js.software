@@ -867,21 +867,8 @@ jobs:
           echo "⏱️  Build will be available for internal testing in 5-15 minutes"
           echo "🔗 Check status: https://appstoreconnect.apple.com/apps"
 
-      # Add internal testers (if configured)
-      - name: Notify internal testers
-        continue-on-error: true
-        run: |
-          if [ -n "${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}" ]; then
-            echo "📧 Internal testers configured: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}"
-            echo "🔄 Testers will be automatically notified when build is processed"
-            echo "⏱️  Processing usually takes 5-15 minutes"
-          else
-            echo "ℹ️ No internal testers configured via TESTFLIGHT_INTERNAL_TESTERS variable"
-            echo "💡 Add testers manually in App Store Connect → TestFlight → Internal Testing"
-          fi
-
-      # Manage TestFlight Internal Testers using Fastlane
-      - name: Manage TestFlight Internal Testers (Fastlane)
+      # Manage TestFlight Internal Testers using Direct App Store Connect API
+      - name: Manage TestFlight Internal Testers (Direct API)
         if: vars.TESTFLIGHT_INTERNAL_TESTERS # Enable step only if testers are configured
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -892,7 +879,7 @@ jobs:
           BUNDLE_ID: ${{ env.BUNDLE_ID }}
           TESTFLIGHT_TESTERS: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}
         run: |
-          echo "🚀 Managing TestFlight testers using Fastlane..."
+          echo "🚀 Managing TestFlight testers using direct App Store Connect API..."
 
           # Check if tester management API key is available
           if [ -z "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
@@ -908,13 +895,6 @@ jobs:
 
           echo "🔑 Tester management key ID: $TESTER_KEY_ID"
 
-          # Install Fastlane
-          echo "📦 Installing Fastlane..."
-          sudo gem install fastlane --no-document
-
-          # Verify Fastlane installation
-          fastlane --version
-
           # Create API key file from tester management secret
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$TESTER_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
@@ -929,181 +909,200 @@ jobs:
           echo "✅ API key file created: AuthKey_$TESTER_KEY_ID.p8"
           echo "📏 File size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8) bytes"
 
-          # Create fastlane directory structure (required by Fastlane)
-          mkdir -p fastlane
+          # Install jq for JSON processing if not available
+          if ! command -v jq &> /dev/null; then
+            echo "📦 Installing jq for JSON processing..."
+            if command -v brew &> /dev/null; then
+              brew install jq
+            else
+              echo "❌ jq not available and brew not found. Please install jq manually."
+              exit 1
+            fi
+          fi
 
-          # Export environment variables for Fastlane
-          export TESTER_KEY_ID="$TESTER_KEY_ID"
-          export APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID"
-          export BUNDLE_ID="$BUNDLE_ID"
-          export TESTFLIGHT_TESTERS="$TESTFLIGHT_TESTERS"
+          # Create JWT token generation script
+          cat > /tmp/generate_jwt.py << 'EOF'
+          import jwt
+          import json
+          import sys
+          import time
+          from pathlib import Path
 
-          echo "🔍 Debug: Environment variables for tester management:"
-          echo "   TESTER_KEY_ID: $TESTER_KEY_ID"
-          echo "   APP_STORE_CONNECT_ISSUER_ID: $APP_STORE_CONNECT_ISSUER_ID"
-          echo "   BUNDLE_ID: $BUNDLE_ID"
-          echo "   TESTFLIGHT_TESTERS: $TESTFLIGHT_TESTERS"
-
-          # Create Fastfile with analytics disabled and no interactive prompts
-          cat > fastlane/Fastfile << 'EOF'
-          # Disable analytics and interactive prompts
-          opt_out_usage
-
-          default_platform(:ios)
-
-          platform :ios do
-            desc "Add internal testers to TestFlight"
-            lane :add_testflight_testers do |options|
-              puts "🔧 Configuring App Store Connect API..."
-              
-              # Get values from environment
-              key_id = ENV["TESTER_KEY_ID"]
-              issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
-              bundle_id = ENV["BUNDLE_ID"]
-              testers_string = ENV["TESTFLIGHT_TESTERS"]
-              
-              puts "🔑 Key ID: #{key_id}"
-              puts "🆔 Issuer ID: #{issuer_id}"
-              puts "📱 Bundle ID: #{bundle_id}"
-              puts "👥 Testers to add: #{testers_string}"
-              
-              if key_id.nil? || key_id.empty?
-                puts "❌ TESTER_KEY_ID is not set or empty"
-                raise "Missing required environment variable: TESTER_KEY_ID"
-              end
-              
-              if issuer_id.nil? || issuer_id.empty?
-                puts "❌ APP_STORE_CONNECT_ISSUER_ID is not set or empty"
-                raise "Missing required environment variable: APP_STORE_CONNECT_ISSUER_ID"
-              end
-              
-              # Build API key configuration hash for direct parameter usage
-              api_key_config = {
-                key_id: key_id,
-                issuer_id: issuer_id,
-                key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{key_id}.p8"
-              }
-              
-              # Split testers by comma and clean whitespace
-              testers = testers_string.split(',').map(&:strip)
-              
-              # Validate email format
-              valid_testers = []
-              testers.each do |email|
-                if email.match?(/\A[\w+\-.]+@[a-z\d\-]+(\.[a-z\d\-]+)*\.[a-z]+\z/i)
-                  valid_testers << email
-                else
-                  puts "❌ Invalid email format: #{email} - skipping"
-                end
-              end
-              
-              puts "📧 Valid testers: #{valid_testers.join(', ')}"
-              
-              if valid_testers.empty?
-                puts "❌ No valid testers found"
-                return
-              end
-              
-              # Try multiple approaches for adding testers
-              success_count = 0
-              
-              valid_testers.each do |email|
-                puts "\n👤 Processing tester: #{email}"
-                tester_added = false
-                
-                # Approach 1: Try pilot with individual tester parameters
-                begin
-                  puts "🔄 Approach 1: Using pilot with individual tester..."
-                  pilot(
-                    api_key: api_key_config,
-                    skip_submission: true,
-                    skip_waiting_for_build_processing: true,
-                    app_identifier: bundle_id,
-                    distribute_external: false,
-                    email: email,
-                    first_name: "Beta",
-                    last_name: "Tester"
+          def generate_jwt_token(key_id, issuer_id, key_file_path):
+              try:
+                  # Read the private key
+                  with open(key_file_path, 'r') as key_file:
+                      private_key = key_file.read()
+                  
+                  # Create JWT payload
+                  payload = {
+                      'iss': issuer_id,
+                      'iat': int(time.time()),
+                      'exp': int(time.time()) + 1200,  # 20 minutes
+                      'aud': 'appstoreconnect-v1'
+                  }
+                  
+                  # Generate JWT token
+                  token = jwt.encode(
+                      payload, 
+                      private_key, 
+                      algorithm='ES256',
+                      headers={'kid': key_id}
                   )
                   
-                  puts "✅ Success with pilot: #{email}"
-                  tester_added = true
-                  success_count += 1
-                  
-                rescue => e
-                  puts "⚠️ Pilot approach failed: #{e.message}"
-                  
-                  # Approach 2: Try using add_beta_tester if available
-                  begin
-                    puts "🔄 Approach 2: Checking if tester already exists..."
-                    
-                    # Since invite_beta_testers doesn't exist, let's just log that the tester might already exist
-                    error_msg = e.message.downcase
-                    if error_msg.include?("already") || error_msg.include?("exist") || error_msg.include?("duplicate")
-                      puts "✅ Tester already exists: #{email}"
-                      tester_added = true
-                      success_count += 1
-                    else
-                      puts "❌ Could not add tester: #{email}"
-                      puts "Error details: #{e.message}"
-                      puts "💡 Tester may need to be added manually in App Store Connect"
-                    end
-                    
-                  rescue => e2
-                    puts "❌ Both approaches failed for #{email}"
-                    puts "   Error 1 (pilot): #{e.message}"
-                    puts "   Error 2 (fallback): #{e2.message}"
-                    puts "💡 Tester may already exist or API key may lack permissions"
-                  end
-                end
-                
-                unless tester_added
-                  puts "⚠️ Could not confirm tester addition: #{email}"
-                  puts "💡 Please check App Store Connect → TestFlight → Internal Testing"
-                end
-              end
+                  return token
+              except Exception as e:
+                  print(f"Error generating JWT token: {e}", file=sys.stderr)
+                  return None
+
+          if __name__ == "__main__":
+              if len(sys.argv) != 4:
+                  print("Usage: python generate_jwt.py <key_id> <issuer_id> <key_file_path>", file=sys.stderr)
+                  sys.exit(1)
               
-              puts "\n🎉 Tester management completed!"
-              puts "✅ Successfully processed: #{success_count}/#{valid_testers.length} testers"
+              key_id = sys.argv[1]
+              issuer_id = sys.argv[2]
+              key_file_path = sys.argv[3]
               
-              if success_count == valid_testers.length
-                puts "🌟 All testers added successfully!"
-              elsif success_count > 0
-                puts "⚠️ Some testers were added, but #{valid_testers.length - success_count} failed"
-                puts "💡 Failed testers may already be in TestFlight"
+              token = generate_jwt_token(key_id, issuer_id, key_file_path)
+              if token:
+                  print(token)
+              else:
+                  sys.exit(1)
+          EOF
+
+          # Install PyJWT if needed
+          echo "📦 Installing PyJWT for token generation..."
+          python3 -m pip install PyJWT cryptography
+
+          # Generate JWT token
+          echo "🔐 Generating JWT token..."
+          JWT_TOKEN=$(python3 /tmp/generate_jwt.py "$TESTER_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID" ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8)
+
+          if [ -z "$JWT_TOKEN" ]; then
+            echo "❌ Failed to generate JWT token"
+            exit 1
+          fi
+
+          echo "✅ JWT token generated successfully"
+
+          # Function to make authenticated API requests
+          make_api_request() {
+            local method="$1"
+            local url="$2"
+            local data="$3"
+            
+            if [ "$method" = "GET" ]; then
+              curl -s -H "Authorization: Bearer $JWT_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   "$url"
+            else
+              curl -s -X "$method" \
+                   -H "Authorization: Bearer $JWT_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   -d "$data" \
+                   "$url"
+            fi
+          }
+
+          # Step 1: Get App ID from bundle identifier
+          echo "🔍 Finding app ID for bundle: $BUNDLE_ID"
+          APPS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=$BUNDLE_ID")
+
+          APP_ID=$(echo "$APPS_RESPONSE" | jq -r '.data[0].id // empty')
+
+          if [ -z "$APP_ID" ]; then
+            echo "❌ Could not find app with bundle ID: $BUNDLE_ID"
+            echo "🔍 Apps response: $APPS_RESPONSE"
+            exit 1
+          fi
+
+          echo "✅ Found app ID: $APP_ID"
+
+          # Step 2: Parse testers email list
+          echo "👥 Processing testers: $TESTFLIGHT_TESTERS"
+          IFS=',' read -ra TESTER_EMAILS <<< "$TESTFLIGHT_TESTERS"
+
+          # Step 3: Process each tester
+          SUCCESS_COUNT=0
+          TOTAL_TESTERS=${#TESTER_EMAILS[@]}
+
+          for email in "${TESTER_EMAILS[@]}"; do
+            # Trim whitespace
+            email=$(echo "$email" | tr -d ' ')
+            
+            echo ""
+            echo "👤 Processing tester: $email"
+            
+            # Check if tester already exists
+            echo "🔍 Checking if tester exists..."
+            EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
+            EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty')
+            
+            if [ -n "$EXISTING_TESTER_ID" ]; then
+              echo "✅ Tester already exists with ID: $EXISTING_TESTER_ID"
+              
+              # Check if tester is already assigned to this app
+              echo "🔍 Checking app assignment..."
+              TESTER_APPS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters/$EXISTING_TESTER_ID/apps")
+              APP_ASSIGNED=$(echo "$TESTER_APPS_RESPONSE" | jq -r --arg app_id "$APP_ID" '.data[] | select(.id == $app_id) | .id // empty')
+              
+              if [ -n "$APP_ASSIGNED" ]; then
+                echo "✅ Tester already assigned to this app"
+                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
               else
-                puts "⚠️ No testers could be added"
-                puts "💡 This might be expected if testers are already added"
-                puts "💡 Check TestFlight in App Store Connect to verify"
-              end
-            end
-          end
-          EOF
+                echo "🔄 Adding tester to app..."
+                # Add tester to app
+                ADD_TO_APP_DATA="{\"data\":[{\"type\":\"apps\",\"id\":\"$APP_ID\"}]}"
+                ADD_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaTesters/$EXISTING_TESTER_ID/relationships/apps" "$ADD_TO_APP_DATA")
+                
+                if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null; then
+                  echo "❌ Failed to add existing tester to app: $(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
+                else
+                  echo "✅ Successfully added existing tester to app"
+                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                fi
+              fi
+            else
+              echo "🔄 Creating new beta tester..."
+              # Create new beta tester
+              CREATE_TESTER_DATA="{\"data\":{\"type\":\"betaTesters\",\"attributes\":{\"email\":\"$email\",\"firstName\":\"Beta\",\"lastName\":\"Tester\"},\"relationships\":{\"apps\":{\"data\":[{\"type\":\"apps\",\"id\":\"$APP_ID\"}]}}}}"
+              CREATE_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaTesters" "$CREATE_TESTER_DATA")
+              
+              if echo "$CREATE_RESPONSE" | jq -e '.errors' > /dev/null; then
+                echo "❌ Failed to create tester: $(echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
+                # Check if error is about tester already existing (in case of race condition)
+                ERROR_CODE=$(echo "$CREATE_RESPONSE" | jq -r '.errors[0].code // ""')
+                if [ "$ERROR_CODE" = "ENTITY_ALREADY_EXISTS" ]; then
+                  echo "💡 Tester already exists, this is normal"
+                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                fi
+              else
+                echo "✅ Successfully created new tester"
+                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+              fi
+            fi
+          done
 
-          # Create Appfile to prevent Fastlane from asking questions
-          cat > fastlane/Appfile << EOF
-          # Disable interactive prompts
-          app_identifier("$BUNDLE_ID")
-          EOF
+          echo ""
+          echo "🎉 Tester management completed!"
+          echo "✅ Successfully processed: $SUCCESS_COUNT/$TOTAL_TESTERS testers"
 
-          echo "🔍 Testing API connection with App Manager key..."
-          # Run Fastlane to add testers
-          echo "🏃 Running Fastlane to manage testers..."
-          if TESTER_KEY_ID="$TESTER_KEY_ID" \
-             APP_STORE_CONNECT_ISSUER_ID="$APP_STORE_CONNECT_ISSUER_ID" \
-             BUNDLE_ID="$BUNDLE_ID" \
-             TESTFLIGHT_TESTERS="$TESTFLIGHT_TESTERS" \
-             fastlane ios add_testflight_testers; then
-            echo "✅ Fastlane tester management completed successfully!"
+          if [ $SUCCESS_COUNT -eq $TOTAL_TESTERS ]; then
+            echo "🌟 All testers processed successfully!"
+          elif [ $SUCCESS_COUNT -gt 0 ]; then
+            echo "⚠️ Some testers were processed, but $((TOTAL_TESTERS - SUCCESS_COUNT)) had issues"
+            echo "💡 This is often normal for testers that are already properly configured"
           else
-            echo "⚠️ Fastlane tester management had some issues, but continuing..."
-            echo "💡 Testers may need to be added manually in App Store Connect"
+            echo "⚠️ No testers could be processed"
+            echo "💡 Check API key permissions and App Store Connect setup"
           fi
 
           # Clean up
-          rm -rf fastlane
           rm -f ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
+          rm -f /tmp/generate_jwt.py
 
-          echo "🎯 TestFlight tester management finished"
+          echo "🎯 Direct API TestFlight tester management finished"
 
       # Upload IPA as artifact backup
       - name: Upload IPA artifact
@@ -1124,13 +1123,13 @@ jobs:
           echo "🏃 GitHub Run Number: ${{ github.run_number }}"
           echo "🔐 Signed with: Apple Distribution (${{ secrets.APPLE_TEAM_ID }})"
           echo "🚀 Uploaded via: xcrun altool (Apple's direct tool)"
-          echo "👥 Tester Management via: Fastlane pilot (App Manager API key)"
+          echo "👥 Tester Management via: Direct API"
           echo "✈️ Uploaded to TestFlight successfully"
           echo "⏱️ Build will be available for internal testing in 5-15 minutes"
           echo "🔗 Check status: https://appstoreconnect.apple.com/apps"
           echo ""
-          echo "📋 Unified Fastlane Approach:"
-          echo "   • Validation: Both API keys tested with appropriate Fastlane actions"
+          echo "📋 Direct API Approach:"
+          echo "   • Validation: API key authentication"
           echo "   • Upload: Developer key with xcrun altool (Apple's direct tool)"
-          echo "   • Tester Management: App Manager key with pilot (proper permissions)"
+          echo "   • Tester Management: Direct API calls"
           echo "   • Deprecation Ready: No more xcrun altool dependency"
