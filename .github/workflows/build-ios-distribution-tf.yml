@@ -115,6 +115,325 @@ jobs:
           rm -f ~/.appstoreconnect/private_keys/AuthKey_*.p8
           rm -f /tmp/test_validation.rb
 
+      # Early Tester Management Validation (Before Build) - Fast fail if tester issues
+      - name: Validate TestFlight Tester Management (Early Check)
+        if: vars.TESTFLIGHT_INTERNAL_TESTERS # Enable step only if testers are configured
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
+          APP_STORE_CONNECT_TESTER_API_KEY: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}
+          TESTFLIGHT_TESTERS: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}
+        run: |
+          echo "🚀 Early TestFlight tester validation (before expensive build operations)..."
+
+          # Check if tester management API key is available
+          if [ -z "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
+            echo "⚠️ App Manager API key not configured for tester management"
+            echo "💡 Using Developer API key (may have limited permissions)"
+            TESTER_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID"
+            TESTER_API_KEY="$APP_STORE_CONNECT_API_KEY"
+          else
+            echo "✅ Using dedicated App Manager API key for tester management"
+            TESTER_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
+            TESTER_API_KEY="$APP_STORE_CONNECT_TESTER_API_KEY"
+          fi
+
+          echo "🔑 Tester management key ID: $TESTER_KEY_ID"
+
+          # Create API key file from tester management secret
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$TESTER_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
+
+          # Verify API key file was created correctly
+          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8 ]; then
+            echo "❌ Failed to create API key file"
+            exit 1
+          fi
+
+          echo "✅ API key file created: AuthKey_$TESTER_KEY_ID.p8"
+          echo "📏 File size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8) bytes"
+
+          # Install jq for JSON processing if not available
+          if ! command -v jq &> /dev/null; then
+            echo "📦 Installing jq for JSON processing..."
+            if command -v brew &> /dev/null; then
+              brew install jq
+            else
+              echo "❌ jq not available and brew not found. Please install jq manually."
+              exit 1
+            fi
+          fi
+
+          # Create JWT token generation script
+          cat > /tmp/generate_jwt.py << 'EOF'
+          import jwt
+          import json
+          import sys
+          import time
+          from pathlib import Path
+
+          def generate_jwt_token(key_id, issuer_id, key_file_path):
+              try:
+                  # Read the private key
+                  with open(key_file_path, 'r') as key_file:
+                      private_key = key_file.read()
+                  
+                  # Create JWT payload
+                  payload = {
+                      'iss': issuer_id,
+                      'iat': int(time.time()),
+                      'exp': int(time.time()) + 1200,  # 20 minutes
+                      'aud': 'appstoreconnect-v1'
+                  }
+                  
+                  # Generate JWT token
+                  token = jwt.encode(
+                      payload, 
+                      private_key, 
+                      algorithm='ES256',
+                      headers={'kid': key_id}
+                  )
+                  
+                  return token
+              except Exception as e:
+                  print(f"Error generating JWT token: {e}", file=sys.stderr)
+                  return None
+
+          if __name__ == "__main__":
+              if len(sys.argv) != 4:
+                  print("Usage: python generate_jwt.py <key_id> <issuer_id> <key_file_path>", file=sys.stderr)
+                  sys.exit(1)
+              
+              key_id = sys.argv[1]
+              issuer_id = sys.argv[2]
+              key_file_path = sys.argv[3]
+              
+              token = generate_jwt_token(key_id, issuer_id, key_file_path)
+              if token:
+                  print(token)
+              else:
+                  sys.exit(1)
+          EOF
+
+          # Install PyJWT if needed
+          echo "📦 Installing PyJWT for token generation..."
+          python3 -m pip install PyJWT cryptography --break-system-packages
+
+          # Generate JWT token
+          echo "🔐 Generating JWT token..."
+          JWT_TOKEN=$(python3 /tmp/generate_jwt.py "$TESTER_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID" ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8)
+
+          if [ -z "$JWT_TOKEN" ]; then
+            echo "❌ Failed to generate JWT token"
+            exit 1
+          fi
+
+          echo "✅ JWT token generated successfully"
+
+          # Function to make authenticated API requests
+          make_api_request() {
+            local method="$1"
+            local url="$2"
+            local data="$3"
+            
+            if [ "$method" = "GET" ]; then
+              curl -s -H "Authorization: Bearer $JWT_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   "$url"
+            else
+              curl -s -X "$method" \
+                   -H "Authorization: Bearer $JWT_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   -d "$data" \
+                   "$url"
+            fi
+          }
+
+          # Step 1: Find the internal testing group "js.s team"
+          echo "🔍 Looking for internal testing group: 'js.s team'"
+
+          # Function to find beta group by name
+          find_beta_group() {
+            local group_name="js.s team"
+            local retries=3
+            local delay=10
+            
+            for i in $(seq 1 $retries); do
+              echo "🔄 Attempt $i/$retries: Looking for group '$group_name'"
+              
+              # Get all beta groups and look for our specific group
+              GROUPS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaGroups")
+              
+              # Check if the response contains errors
+              if echo "$GROUPS_RESPONSE" | jq -e '.errors' > /dev/null; then
+                echo "❌ API Error on attempt $i:"
+                echo "$GROUPS_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+                
+                if [ $i -lt $retries ]; then
+                  echo "⏱️  Waiting ${delay}s before retry..."
+                  sleep $delay
+                  continue
+                else
+                  echo "❌ Failed after $retries attempts due to API errors"
+                  return 1
+                fi
+              fi
+              
+              # Find the group by name
+              GROUP_ID=$(echo "$GROUPS_RESPONSE" | jq -r --arg name "$group_name" '.data[] | select(.attributes.name == $name) | .id // empty')
+              
+              if [ -n "$GROUP_ID" ]; then
+                echo "✅ Found group '$group_name' with ID: $GROUP_ID"
+                return 0
+              else
+                echo "⚠️  Group '$group_name' not found on attempt $i/$retries"
+                echo "🔍 Available groups (first 5):"
+                echo "$GROUPS_RESPONSE" | jq -r '.data[]? | "\(.attributes.name) (ID: \(.id))"' | head -5
+                
+                if [ $i -lt $retries ]; then
+                  echo "⏱️  Waiting ${delay}s before retry..."
+                  sleep $delay
+                else
+                  echo "❌ Group '$group_name' not found after $retries attempts"
+                  return 1
+                fi
+              fi
+            done
+          }
+
+          # Try to find the group
+          if find_beta_group; then
+            echo "🎉 Successfully found beta group: $GROUP_ID"
+          else
+            echo "❌ Could not find beta group 'js.s team'"
+            echo "🔍 This usually means:"
+            echo "   1. The group name doesn't match exactly"
+            echo "   2. The API key doesn't have access to beta groups"
+            echo "   3. The group doesn't exist in this team"
+            echo ""
+            echo "💡 You can create the group manually in App Store Connect"
+            echo "❌ Stopping build early due to tester group issue"
+            exit 1
+          fi
+
+          # Step 2: Get current testers in the group
+          echo "👥 Getting current testers in group 'js.s team'..."
+          GROUP_TESTERS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/betaTesters")
+
+          if echo "$GROUP_TESTERS_RESPONSE" | jq -e '.errors' > /dev/null; then
+            echo "❌ Failed to get group testers:"
+            echo "$GROUP_TESTERS_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+            exit 1
+          fi
+
+          # Get list of current testers in group
+          CURRENT_TESTERS=$(echo "$GROUP_TESTERS_RESPONSE" | jq -r '.data[]?.attributes.email // empty' | sort)
+          echo "📋 Current testers in group:"
+          echo "$CURRENT_TESTERS" | while read -r email; do
+            [ -n "$email" ] && echo "   - $email"
+          done
+
+          # Step 3: Parse target testers from GitHub variable
+          echo "👥 Target testers from GitHub variable: $TESTFLIGHT_TESTERS"
+          IFS=',' read -ra TARGET_TESTER_EMAILS <<< "$TESTFLIGHT_TESTERS"
+
+          # Clean and sort target testers
+          TARGET_TESTERS=""
+          for email in "${TARGET_TESTER_EMAILS[@]}"; do
+            email=$(echo "$email" | tr -d ' ')
+            [ -n "$email" ] && TARGET_TESTERS="$TARGET_TESTERS$email\n"
+          done
+          TARGET_TESTERS=$(echo -e "$TARGET_TESTERS" | sort | grep -v '^$')
+
+          echo "📋 Target testers:"
+          echo "$TARGET_TESTERS" | while read -r email; do
+            [ -n "$email" ] && echo "   - $email"
+          done
+
+          # Step 4: Find testers to add (in target but not in current)
+          TESTERS_TO_ADD=$(comm -23 <(echo "$TARGET_TESTERS") <(echo "$CURRENT_TESTERS"))
+
+          echo ""
+          echo "📊 Early Tester Validation Plan:"
+          if [ -n "$TESTERS_TO_ADD" ]; then
+            echo "➕ Testers to validate and add later:"
+            echo "$TESTERS_TO_ADD" | while read -r email; do
+              [ -n "$email" ] && echo "   + $email"
+            done
+            
+            # Validate each tester early (don't add yet, just check)
+            echo ""
+            echo "🔍 Early validation of new testers..."
+            
+            VALIDATION_FAILED=false
+            while read -r email; do
+              [ -z "$email" ] && continue
+              
+              echo "👤 Validating: $email"
+              
+              # Validate email format
+              if [[ ! "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+                echo "❌ Invalid email format: $email"
+                VALIDATION_FAILED=true
+                continue
+              fi
+              
+              # Check if tester exists globally or can be created
+              echo "🔍 Checking if tester exists globally..."
+              EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
+              
+              # Check for API errors in tester lookup
+              if echo "$EXISTING_TESTER_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+                echo "❌ API Error during tester lookup:"
+                echo "$EXISTING_TESTER_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+                echo "💡 This might be due to:"
+                echo "   - Invalid email format"
+                echo "   - Email not associated with an Apple ID"
+                echo "   - API key permissions"
+                VALIDATION_FAILED=true
+                continue
+              fi
+              
+              EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+              
+              if [ -n "$EXISTING_TESTER_ID" ]; then
+                echo "✅ Tester exists and can be added: $email (ID: $EXISTING_TESTER_ID)"
+              else
+                echo "⚠️ Tester not found globally, will need to be created: $email"
+                echo "💡 Make sure $email has a valid Apple ID"
+              fi
+              
+              echo ""
+            done <<< "$TESTERS_TO_ADD"
+            
+            if [ "$VALIDATION_FAILED" = true ]; then
+              echo "❌ Tester validation failed - fix the issues above before building"
+              echo "💡 Common fixes:"
+              echo "   1. Ensure all emails have valid Apple IDs"
+              echo "   2. Check email formats are correct"
+              echo "   3. Verify API key permissions"
+              exit 1
+            else
+              echo "✅ All new testers validated successfully"
+              echo "🎯 They will be added after the build completes"
+            fi
+          else
+            echo "➕ No new testers to add"
+          fi
+
+          # Store group ID for later use
+          echo "GROUP_ID=$GROUP_ID" >> $GITHUB_ENV
+          echo "TESTERS_TO_ADD<<EOF" >> $GITHUB_ENV
+          echo "$TESTERS_TO_ADD" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          # Clean up (but keep for later use)
+          echo "🧹 Early validation cleanup..."
+          echo "✅ Early tester validation completed - proceeding with build"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
         with:
@@ -544,124 +863,72 @@ jobs:
           echo "📏 File size: $(ls -lh "${{ env.IPA_PATH }}" | awk '{print $5}')"
           echo "🔐 File permissions: $(ls -l "${{ env.IPA_PATH }}" | awk '{print $1}')"
 
-      # Manage TestFlight Internal Testers using Direct API (Before Upload)
-      - name: Manage TestFlight Internal Testers (Group-Based)
-        if: vars.TESTFLIGHT_INTERNAL_TESTERS # Enable step only if testers are configured
+      # Add Validated Testers to Group (After Build, Before Upload)
+      - name: Add Validated Testers to TestFlight Group
+        if: vars.TESTFLIGHT_INTERNAL_TESTERS && env.TESTERS_TO_ADD != '' # Only if testers were validated and need to be added
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_TESTER_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY_ID }}
           APP_STORE_CONNECT_TESTER_API_KEY: ${{ secrets.APP_STORE_CONNECT_TESTER_API_KEY }}
-          BUNDLE_ID: ${{ env.BUNDLE_ID }}
-          TESTFLIGHT_TESTERS: ${{ vars.TESTFLIGHT_INTERNAL_TESTERS }}
         run: |
-          echo "🚀 Managing TestFlight testers using group-based approach (before upload)..."
+          echo "🚀 Adding validated testers to TestFlight group (after successful build)..."
 
           # Check if tester management API key is available
           if [ -z "$APP_STORE_CONNECT_TESTER_API_KEY_ID" ] || [ -z "$APP_STORE_CONNECT_TESTER_API_KEY" ]; then
-            echo "⚠️ App Manager API key not configured for tester management"
-            echo "💡 Using Developer API key (may have limited permissions)"
             TESTER_KEY_ID="$APP_STORE_CONNECT_API_KEY_ID"
             TESTER_API_KEY="$APP_STORE_CONNECT_API_KEY"
           else
-            echo "✅ Using dedicated App Manager API key for tester management"
             TESTER_KEY_ID="$APP_STORE_CONNECT_TESTER_API_KEY_ID"
             TESTER_API_KEY="$APP_STORE_CONNECT_TESTER_API_KEY"
           fi
 
-          echo "🔑 Tester management key ID: $TESTER_KEY_ID"
-
-          # Create API key file from tester management secret
+          # Create API key file
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$TESTER_API_KEY" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
 
-          # Verify API key file was created correctly
-          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8 ]; then
-            echo "❌ Failed to create API key file"
-            exit 1
-          fi
+          # Install PyJWT if needed
+          python3 -m pip install PyJWT cryptography --break-system-packages
 
-          echo "✅ API key file created: AuthKey_$TESTER_KEY_ID.p8"
-          echo "📏 File size: $(wc -c < ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8) bytes"
-
-          # Install jq for JSON processing if not available
-          if ! command -v jq &> /dev/null; then
-            echo "📦 Installing jq for JSON processing..."
-            if command -v brew &> /dev/null; then
-              brew install jq
-            else
-              echo "❌ jq not available and brew not found. Please install jq manually."
-              exit 1
-            fi
-          fi
-
-          # Create JWT token generation script
+          # Generate JWT token
           cat > /tmp/generate_jwt.py << 'EOF'
           import jwt
-          import json
-          import sys
           import time
-          from pathlib import Path
+          import sys
 
           def generate_jwt_token(key_id, issuer_id, key_file_path):
               try:
-                  # Read the private key
                   with open(key_file_path, 'r') as key_file:
                       private_key = key_file.read()
                   
-                  # Create JWT payload
                   payload = {
                       'iss': issuer_id,
                       'iat': int(time.time()),
-                      'exp': int(time.time()) + 1200,  # 20 minutes
+                      'exp': int(time.time()) + 1200,
                       'aud': 'appstoreconnect-v1'
                   }
                   
-                  # Generate JWT token
-                  token = jwt.encode(
-                      payload, 
-                      private_key, 
-                      algorithm='ES256',
-                      headers={'kid': key_id}
-                  )
-                  
-                  return token
+                  return jwt.encode(payload, private_key, algorithm='ES256', headers={'kid': key_id})
               except Exception as e:
-                  print(f"Error generating JWT token: {e}", file=sys.stderr)
+                  print(f"Error: {e}", file=sys.stderr)
                   return None
 
           if __name__ == "__main__":
-              if len(sys.argv) != 4:
-                  print("Usage: python generate_jwt.py <key_id> <issuer_id> <key_file_path>", file=sys.stderr)
-                  sys.exit(1)
-              
-              key_id = sys.argv[1]
-              issuer_id = sys.argv[2]
-              key_file_path = sys.argv[3]
-              
-              token = generate_jwt_token(key_id, issuer_id, key_file_path)
+              token = generate_jwt_token(sys.argv[1], sys.argv[2], sys.argv[3])
               if token:
                   print(token)
               else:
                   sys.exit(1)
           EOF
 
-          # Install PyJWT if needed
-          echo "📦 Installing PyJWT for token generation..."
-          python3 -m pip install PyJWT cryptography --break-system-packages
-
-          # Generate JWT token
-          echo "🔐 Generating JWT token..."
           JWT_TOKEN=$(python3 /tmp/generate_jwt.py "$TESTER_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID" ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8)
 
           if [ -z "$JWT_TOKEN" ]; then
             echo "❌ Failed to generate JWT token"
             exit 1
           fi
-
-          echo "✅ JWT token generated successfully"
 
           # Function to make authenticated API requests
           make_api_request() {
@@ -670,198 +937,71 @@ jobs:
             local data="$3"
             
             if [ "$method" = "GET" ]; then
-              curl -s -H "Authorization: Bearer $JWT_TOKEN" \
-                   -H "Content-Type: application/json" \
-                   "$url"
+              curl -s -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" "$url"
             else
-              curl -s -X "$method" \
-                   -H "Authorization: Bearer $JWT_TOKEN" \
-                   -H "Content-Type: application/json" \
-                   -d "$data" \
-                   "$url"
+              curl -s -X "$method" -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" -d "$data" "$url"
             fi
           }
 
-          # Step 1: Find the internal testing group "js.s team"
-          echo "🔍 Looking for internal testing group: 'js.s team'"
-
-          # Function to find beta group by name
-          find_beta_group() {
-            local group_name="js.s team"
-            local retries=3
-            local delay=10
-            
-            for i in $(seq 1 $retries); do
-              echo "🔄 Attempt $i/$retries: Looking for group '$group_name'"
-              
-              # Get all beta groups and look for our specific group
-              GROUPS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaGroups")
-              
-              # Check if the response contains errors
-              if echo "$GROUPS_RESPONSE" | jq -e '.errors' > /dev/null; then
-                echo "❌ API Error on attempt $i:"
-                echo "$GROUPS_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
-                
-                if [ $i -lt $retries ]; then
-                  echo "⏱️  Waiting ${delay}s before retry..."
-                  sleep $delay
-                  continue
-                else
-                  echo "❌ Failed after $retries attempts due to API errors"
-                  return 1
-                fi
-              fi
-              
-              # Find the group by name
-              GROUP_ID=$(echo "$GROUPS_RESPONSE" | jq -r --arg name "$group_name" '.data[] | select(.attributes.name == $name) | .id // empty')
-              
-              if [ -n "$GROUP_ID" ]; then
-                echo "✅ Found group '$group_name' with ID: $GROUP_ID"
-                return 0
-              else
-                echo "⚠️  Group '$group_name' not found on attempt $i/$retries"
-                echo "🔍 Available groups (first 5):"
-                echo "$GROUPS_RESPONSE" | jq -r '.data[]? | "\(.attributes.name) (ID: \(.id))"' | head -5
-                
-                if [ $i -lt $retries ]; then
-                  echo "⏱️  Waiting ${delay}s before retry..."
-                  sleep $delay
-                else
-                  echo "❌ Group '$group_name' not found after $retries attempts"
-                  return 1
-                fi
-              fi
-            done
-          }
-
-          # Try to find the group
-          if find_beta_group; then
-            echo "🎉 Successfully found beta group: $GROUP_ID"
-          else
-            echo "❌ Could not find beta group 'js.s team'"
-            echo "🔍 This usually means:"
-            echo "   1. The group name doesn't match exactly"
-            echo "   2. The API key doesn't have access to beta groups"
-            echo "   3. The group doesn't exist in this team"
-            echo ""
-            echo "💡 You can create the group manually in App Store Connect"
-            echo "⚠️ Skipping tester management - group not found"
-            echo "🎯 Group-based TestFlight tester management skipped"
-            exit 0
-          fi
-
-          # Step 2: Get current testers in the group
-          echo "👥 Getting current testers in group 'js.s team'..."
-          GROUP_TESTERS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/betaTesters")
-
-          if echo "$GROUP_TESTERS_RESPONSE" | jq -e '.errors' > /dev/null; then
-            echo "❌ Failed to get group testers:"
-            echo "$GROUP_TESTERS_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
-            exit 1
-          fi
-
-          # Get list of current testers in group
-          CURRENT_TESTERS=$(echo "$GROUP_TESTERS_RESPONSE" | jq -r '.data[]?.attributes.email // empty' | sort)
-          echo "📋 Current testers in group:"
-          echo "$CURRENT_TESTERS" | while read -r email; do
-            [ -n "$email" ] && echo "   - $email"
-          done
-
-          # Step 3: Parse target testers from GitHub variable
-          echo "👥 Target testers from GitHub variable: $TESTFLIGHT_TESTERS"
-          IFS=',' read -ra TARGET_TESTER_EMAILS <<< "$TESTFLIGHT_TESTERS"
-
-          # Clean and sort target testers
-          TARGET_TESTERS=""
-          for email in "${TARGET_TESTER_EMAILS[@]}"; do
-            email=$(echo "$email" | tr -d ' ')
-            [ -n "$email" ] && TARGET_TESTERS="$TARGET_TESTERS$email\n"
-          done
-          TARGET_TESTERS=$(echo -e "$TARGET_TESTERS" | sort | grep -v '^$')
-
-          echo "📋 Target testers:"
-          echo "$TARGET_TESTERS" | while read -r email; do
-            [ -n "$email" ] && echo "   - $email"
-          done
-
-          # Step 4: Find testers to add (in target but not in current)
-          TESTERS_TO_ADD=$(comm -23 <(echo "$TARGET_TESTERS") <(echo "$CURRENT_TESTERS"))
-          TESTERS_TO_REMOVE=$(comm -13 <(echo "$TARGET_TESTERS") <(echo "$CURRENT_TESTERS"))
-
-          echo ""
-          echo "📊 Tester Management Plan:"
-          if [ -n "$TESTERS_TO_ADD" ]; then
-            echo "➕ Testers to add:"
-            echo "$TESTERS_TO_ADD" | while read -r email; do
-              [ -n "$email" ] && echo "   + $email"
-            done
-          else
-            echo "➕ No testers to add"
-          fi
-
-          if [ -n "$TESTERS_TO_REMOVE" ]; then
-            echo "➖ Testers to remove:"
-            echo "$TESTERS_TO_REMOVE" | while read -r email; do
-              [ -n "$email" ] && echo "   - $email"
-            done
-          else
-            echo "➖ No testers to remove"
-          fi
-
-          # Step 5: Add new testers to the group
+          # Process each tester that was validated earlier
           SUCCESS_COUNT=0
           TOTAL_OPERATIONS=0
 
-          if [ -n "$TESTERS_TO_ADD" ]; then
-            echo ""
-            echo "🔄 Adding testers to group..."
+          echo "🔄 Adding validated testers to group..."
+          while read -r email; do
+            [ -z "$email" ] && continue
+            TOTAL_OPERATIONS=$((TOTAL_OPERATIONS + 1))
             
-            while read -r email; do
-              [ -z "$email" ] && continue
-              TOTAL_OPERATIONS=$((TOTAL_OPERATIONS + 1))
+            echo "👤 Adding: $email"
+            
+            # Check if tester exists globally
+            EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
+            EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty' 2>/dev/null)
+            
+            if [ -n "$EXISTING_TESTER_ID" ]; then
+              echo "✅ Tester exists with ID: $EXISTING_TESTER_ID"
               
-              echo "👤 Processing: $email"
+              # Add existing tester to group
+              ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$EXISTING_TESTER_ID\"}]}"
+              ADD_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/relationships/betaTesters" "$ADD_TO_GROUP_DATA")
               
-              # First, check if tester exists globally
-              EXISTING_TESTER_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/betaTesters?filter[email]=$email")
-              EXISTING_TESTER_ID=$(echo "$EXISTING_TESTER_RESPONSE" | jq -r '.data[0].id // empty')
-              
-              if [ -n "$EXISTING_TESTER_ID" ]; then
-                echo "✅ Tester exists with ID: $EXISTING_TESTER_ID"
-                
-                # Add existing tester to group
-                ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$EXISTING_TESTER_ID\"}]}"
-                ADD_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/relationships/betaTesters" "$ADD_TO_GROUP_DATA")
-                
-                if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null; then
-                  echo "❌ Failed to add tester to group: $(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
-                else
-                  echo "✅ Successfully added tester to group"
+              if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+                ERROR_CODE=$(echo "$ADD_RESPONSE" | jq -r '.errors[0].code // ""')
+                if [[ "$ERROR_CODE" == *"ALREADY"* || "$ERROR_CODE" == *"EXISTS"* ]]; then
+                  echo "✅ Tester was already in the group - this is okay"
                   SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                else
+                  echo "❌ Failed to add tester: $(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
                 fi
               else
-                echo "🔄 Creating new tester..."
-                # Create new beta tester (they'll be automatically added to internal groups)
-                CREATE_TESTER_DATA="{\"data\":{\"type\":\"betaTesters\",\"attributes\":{\"email\":\"$email\",\"firstName\":\"Beta\",\"lastName\":\"Tester\"}}}"
-                CREATE_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaTesters" "$CREATE_TESTER_DATA")
-                
-                if echo "$CREATE_RESPONSE" | jq -e '.errors' > /dev/null; then
-                  echo "❌ Failed to create tester: $(echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
-                  # Check if error is about tester already existing
-                  ERROR_CODE=$(echo "$CREATE_RESPONSE" | jq -r '.errors[0].code // ""')
-                  if [ "$ERROR_CODE" = "ENTITY_ALREADY_EXISTS" ]; then
-                    echo "💡 Tester already exists, this is normal"
-                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                  fi
+                echo "✅ Successfully added tester to group"
+                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+              fi
+            else
+              echo "🔄 Creating new tester..."
+              
+              # Create new beta tester
+              CREATE_TESTER_DATA="{\"data\":{\"type\":\"betaTesters\",\"attributes\":{\"email\":\"$email\",\"firstName\":\"Beta\",\"lastName\":\"Tester\"}}}"
+              CREATE_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaTesters" "$CREATE_TESTER_DATA")
+              
+              if echo "$CREATE_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
+                ERROR_CODE=$(echo "$CREATE_RESPONSE" | jq -r '.errors[0].code // ""')
+                if [[ "$ERROR_CODE" == *"ALREADY"* || "$ERROR_CODE" == *"EXISTS"* ]]; then
+                  echo "✅ Tester already exists - this is okay"
+                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
                 else
-                  NEW_TESTER_ID=$(echo "$CREATE_RESPONSE" | jq -r '.data.id // empty')
+                  echo "❌ Failed to create tester: $(echo "$CREATE_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
+                fi
+              else
+                NEW_TESTER_ID=$(echo "$CREATE_RESPONSE" | jq -r '.data.id // empty')
+                if [ -n "$NEW_TESTER_ID" ]; then
                   echo "✅ Successfully created tester with ID: $NEW_TESTER_ID"
                   
                   # Add new tester to group
                   ADD_TO_GROUP_DATA="{\"data\":[{\"type\":\"betaTesters\",\"id\":\"$NEW_TESTER_ID\"}]}"
                   ADD_RESPONSE=$(make_api_request "POST" "https://api.appstoreconnect.apple.com/v1/betaGroups/$GROUP_ID/relationships/betaTesters" "$ADD_TO_GROUP_DATA")
                   
-                  if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null; then
+                  if echo "$ADD_RESPONSE" | jq -e '.errors' > /dev/null 2>&1; then
                     echo "❌ Failed to add new tester to group: $(echo "$ADD_RESPONSE" | jq -r '.errors[0].detail // "Unknown error"')"
                   else
                     echo "✅ Successfully added new tester to group"
@@ -869,38 +1009,17 @@ jobs:
                   fi
                 fi
               fi
-              
-              echo ""
-            done <<< "$TESTERS_TO_ADD"
-          fi
+            fi
+            
+            echo ""
+          done <<< "$TESTERS_TO_ADD"
 
-          # Step 6: Remove testers from group (optional - usually not needed)
-          if [ -n "$TESTERS_TO_REMOVE" ]; then
-            echo "🔄 Removing testers from group..."
-            echo "💡 Note: Removing testers from groups (not implemented to avoid accidents)"
-            echo "💡 You can manually remove testers in App Store Connect if needed"
-          fi
-
-          echo ""
-          echo "🎉 Group-based tester management completed!"
+          echo "🎉 Tester addition completed!"
           echo "✅ Successfully processed: $SUCCESS_COUNT/$TOTAL_OPERATIONS operations"
-          echo "👥 Group: 'js.s team' (ID: $GROUP_ID)"
-
-          if [ $SUCCESS_COUNT -eq $TOTAL_OPERATIONS ]; then
-            echo "🌟 All operations completed successfully!"
-          elif [ $SUCCESS_COUNT -gt 0 ]; then
-            echo "⚠️ Some operations completed, but $((TOTAL_OPERATIONS - SUCCESS_COUNT)) had issues"
-            echo "💡 This is often normal for testers that are already properly configured"
-          else
-            echo "⚠️ No operations could be completed"
-            echo "💡 Check API key permissions and group access"
-          fi
 
           # Clean up
           rm -f ~/.appstoreconnect/private_keys/AuthKey_$TESTER_KEY_ID.p8
           rm -f /tmp/generate_jwt.py
-
-          echo "🎯 Group-based TestFlight tester management completed (ready for upload)"
 
       # Upload to TestFlight using xcrun altool
       - name: Upload to TestFlight using xcrun altool
