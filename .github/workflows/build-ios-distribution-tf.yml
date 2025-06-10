@@ -1007,17 +1007,80 @@ jobs:
 
           # Step 1: Get App ID from bundle identifier
           echo "🔍 Finding app ID for bundle: $BUNDLE_ID"
-          APPS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=$BUNDLE_ID")
 
-          APP_ID=$(echo "$APPS_RESPONSE" | jq -r '.data[0].id // empty')
+          # Add delay to allow for build processing and API sync
+          echo "⏱️  Waiting 30 seconds for upload to sync with App Store Connect API..."
+          sleep 30
 
-          if [ -z "$APP_ID" ]; then
-            echo "❌ Could not find app with bundle ID: $BUNDLE_ID"
-            echo "🔍 Apps response: $APPS_RESPONSE"
-            exit 1
+          # Function to get app ID with retries
+          get_app_id() {
+            local retries=5
+            local delay=15
+            
+            for i in $(seq 1 $retries); do
+              echo "🔄 Attempt $i/$retries: Looking for app with bundle ID: $BUNDLE_ID"
+              
+              APPS_RESPONSE=$(make_api_request "GET" "https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=$BUNDLE_ID")
+              
+              # Check if the response contains errors
+              if echo "$APPS_RESPONSE" | jq -e '.errors' > /dev/null; then
+                echo "❌ API Error on attempt $i:"
+                echo "$APPS_RESPONSE" | jq -r '.errors[0].detail // "Unknown API error"'
+                
+                if [ $i -lt $retries ]; then
+                  echo "⏱️  Waiting ${delay}s before retry..."
+                  sleep $delay
+                  continue
+                else
+                  echo "❌ Failed after $retries attempts due to API errors"
+                  return 1
+                fi
+              fi
+              
+              APP_ID=$(echo "$APPS_RESPONSE" | jq -r '.data[0].id // empty')
+              
+              if [ -n "$APP_ID" ]; then
+                echo "✅ Found app ID: $APP_ID (attempt $i)"
+                return 0
+              else
+                echo "⚠️  App not found on attempt $i/$retries"
+                echo "🔍 API Response preview: $(echo "$APPS_RESPONSE" | jq -r '.data | length') apps returned"
+                
+                if [ $i -lt $retries ]; then
+                  echo "⏱️  Build may still be processing. Waiting ${delay}s before retry..."
+                  sleep $delay
+                else
+                  echo "❌ App still not found after $retries attempts"
+                  echo "📋 Available apps (first 5):"
+                  echo "$APPS_RESPONSE" | jq -r '.data[]? | "\(.attributes.name) - \(.attributes.bundleId)"' | head -5
+                  return 1
+                fi
+              fi
+            done
+          }
+
+          # Try to get the app ID with retries
+          if get_app_id; then
+            echo "🎉 Successfully found app: $APP_ID"
+          else
+            echo "❌ Could not find app with bundle ID: $BUNDLE_ID after multiple attempts"
+            echo "🔍 This usually means:"
+            echo "   1. The app hasn't been created in App Store Connect yet"
+            echo "   2. The API key doesn't have access to this app"
+            echo "   3. The bundle ID doesn't match exactly"
+            echo "   4. The build is still processing and not yet visible to API"
+            echo ""
+            echo "💡 To fix this:"
+            echo "   1. Create the app in App Store Connect if it doesn't exist"
+            echo "   2. Ensure your API key has access to the app"
+            echo "   3. Wait longer for build processing (can take 10+ minutes)"
+            echo "   4. Check that bundle ID matches exactly"
+            
+            # Don't fail the entire workflow - this is expected for new apps or timing issues
+            echo "⚠️ Skipping tester management for now - app not found in App Store Connect API"
+            echo "🎯 Direct API TestFlight tester management skipped"
+            exit 0
           fi
-
-          echo "✅ Found app ID: $APP_ID"
 
           # Step 2: Parse testers email list
           echo "👥 Processing testers: $TESTFLIGHT_TESTERS"
