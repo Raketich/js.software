@@ -820,9 +820,9 @@ jobs:
           default_platform(:ios)
 
           platform :ios do
-            desc "Upload IPA to TestFlight using environment variables (workaround for Fastlane bug)"
+            desc "Upload IPA to TestFlight using pilot with JSON API key file"
             lane :upload_testflight do
-              puts "🚀 Uploading to TestFlight using Fastlane..."
+              puts "🚀 Uploading to TestFlight using pilot command..."
               
               # Get values from environment
               key_id = ENV["APP_STORE_CONNECT_API_KEY_ID"]
@@ -847,21 +847,27 @@ jobs:
               
               puts "✅ API key file verified: #{key_file} (#{File.size(key_file)} bytes)"
               
+              # Create JSON API key file as recommended by Fastlane docs
+              api_key_json_path = "/tmp/api_key_info.json"
+              api_key_json_content = {
+                "key_id" => key_id,
+                "issuer_id" => issuer_id,
+                "key_filepath" => key_file
+              }
+              
+              File.write(api_key_json_path, JSON.pretty_generate(api_key_json_content))
+              puts "✅ Created API key JSON file: #{api_key_json_path}"
+              
               begin
-                puts "🔄 Starting TestFlight upload using environment variables (Fastlane bug workaround)..."
+                puts "🔄 Starting TestFlight upload with pilot using JSON API key file..."
                 
-                # Workaround: Set environment variables that Fastlane recognizes automatically
-                # This avoids the api_key parameter bug
-                ENV["APP_STORE_CONNECT_API_KEY_PATH"] = key_file
-                ENV["APP_STORE_CONNECT_API_KEY_ID"] = key_id
-                ENV["APP_STORE_CONNECT_ISSUER_ID"] = issuer_id
-                
-                upload_to_testflight(
+                # Use pilot directly with api_key_path pointing to JSON file
+                pilot(
                   ipa: ipa_path,
                   app_identifier: bundle_id,
+                  api_key_path: api_key_json_path,
                   skip_submission: false,
                   skip_waiting_for_build_processing: true,
-                  notify_external_testers: false,
                   distribute_external: false
                 )
                 
@@ -880,19 +886,25 @@ jobs:
                   
                   if File.exist?(fallback_key_file)
                     begin
-                      puts "🔄 Starting TestFlight upload with App Manager key using environment variables..."
+                      puts "🔄 Starting TestFlight upload with App Manager key using JSON API key file..."
                       
-                      # Set environment variables for App Manager key
-                      ENV["APP_STORE_CONNECT_API_KEY_PATH"] = fallback_key_file
-                      ENV["APP_STORE_CONNECT_API_KEY_ID"] = fallback_key_id
-                      ENV["APP_STORE_CONNECT_ISSUER_ID"] = issuer_id
+                      # Create JSON file for App Manager key
+                      fallback_api_key_json_path = "/tmp/api_key_info_fallback.json"
+                      fallback_api_key_json_content = {
+                        "key_id" => fallback_key_id,
+                        "issuer_id" => issuer_id,
+                        "key_filepath" => fallback_key_file
+                      }
                       
-                      upload_to_testflight(
+                      File.write(fallback_api_key_json_path, JSON.pretty_generate(fallback_api_key_json_content))
+                      puts "✅ Created fallback API key JSON file: #{fallback_api_key_json_path}"
+                      
+                      pilot(
                         ipa: ipa_path,
                         app_identifier: bundle_id,
+                        api_key_path: fallback_api_key_json_path,
                         skip_submission: false,
                         skip_waiting_for_build_processing: true,
-                        notify_external_testers: false,
                         distribute_external: false
                       )
                       
@@ -912,6 +924,10 @@ jobs:
                   puts "❌ No fallback App Manager key available"
                   raise e
                 end
+              ensure
+                # Clean up JSON files
+                File.delete(api_key_json_path) if File.exist?(api_key_json_path)
+                File.delete("/tmp/api_key_info_fallback.json") if File.exist?("/tmp/api_key_info_fallback.json")
               end
             end
           end
