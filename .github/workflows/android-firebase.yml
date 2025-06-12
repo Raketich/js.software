@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: "Build workflow run ID (optional)"
+        description: "Build workflow run ID (optional - will use latest successful build if empty)"
         required: false
       release_notes:
         description: "Custom release notes (optional)"
@@ -20,6 +20,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Find latest successful build (if needed)
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.build_run_id }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log('🔍 No build_run_id provided, searching for latest successful Android build...');
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'Build Android APK',
+              status: 'completed',
+              conclusion: 'success',
+              per_page: 10
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setFailed('❌ No successful Android build runs found');
+              return;
+            }
+
+            const latestRun = runs.data.workflow_runs[0];
+            console.log(`✅ Found latest successful build: Run #${latestRun.run_number} (ID: ${latestRun.id})`);
+            console.log(`📅 Created: ${latestRun.created_at}`);
+            console.log(`🔗 Commit: ${latestRun.head_sha.substring(0, 7)}`);
+
+            core.exportVariable('AUTO_BUILD_RUN_ID', latestRun.id);
+            core.exportVariable('AUTO_BUILD_RUN_NUMBER', latestRun.run_number);
 
       - name: Extract project configuration
         id: config
@@ -41,9 +70,15 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.build_run_id }}" ]; then
             # Manual trigger with specific run ID
             RUN_NUMBER="${{ inputs.build_run_id }}"
+            echo "📋 Using provided build run ID: $RUN_NUMBER"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$AUTO_BUILD_RUN_NUMBER" ]; then
+            # Manual trigger with auto-discovered run ID
+            RUN_NUMBER="$AUTO_BUILD_RUN_NUMBER"
+            echo "📋 Using auto-discovered build run #: $RUN_NUMBER (ID: $AUTO_BUILD_RUN_ID)"
           elif [ "${{ github.event_name }}" = "workflow_run" ]; then
             # Auto trigger from build workflow
             RUN_NUMBER="${{ github.event.workflow_run.run_number }}"
+            echo "📋 Using workflow_run build run #: $RUN_NUMBER"
           else
             echo "❌ Cannot determine build run number"
             exit 1
@@ -59,7 +94,7 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: ./apk/
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ inputs.build_run_id || github.event.workflow_run.id }}
+          run-id: ${{ inputs.build_run_id || env.AUTO_BUILD_RUN_ID || github.event.workflow_run.id }}
 
       - name: Find downloaded APK
         run: |
@@ -136,33 +171,22 @@ jobs:
           echo "📝 Release Notes:"
           echo "$RELEASE_NOTES"
 
-          # Upload to Firebase (without testers first)
+          # Setup testers parameter
+          TESTERS_PARAM=""
+          if [ -n "${{ vars.FIREBASE_TESTERS }}" ]; then
+            TESTERS_PARAM="--testers ${{ vars.FIREBASE_TESTERS }}"
+            echo "🧑‍💻 Using testers: ${{ vars.FIREBASE_TESTERS }}"
+          else
+            echo "ℹ️ No testers specified - use Firebase Console to add testers"
+          fi
+
+          # Upload to Firebase
           echo "📤 Uploading to Firebase App Distribution..."
           firebase appdistribution:distribute "${{ env.APK_PATH }}" \
             --project "$FIREBASE_PROJECT_ID" \
             --app "$FIREBASE_APP_ID" \
-            --release-notes "$RELEASE_NOTES"
-
-          # Try to add testers if configured (non-blocking)
-          if [ -n "${{ vars.FIREBASE_TESTERS }}" ]; then
-            echo "🧑‍💻 Attempting to add testers: ${{ vars.FIREBASE_TESTERS }}"
-            echo "⏳ Waiting 5 seconds for release to be ready..."
-            sleep 5
-            
-            # Try to distribute to testers (allow failure)
-            if firebase appdistribution:distribute "${{ env.APK_PATH }}" \
-              --project "$FIREBASE_PROJECT_ID" \
-              --app "$FIREBASE_APP_ID" \
-              --testers "${{ vars.FIREBASE_TESTERS }}" 2>/dev/null; then
-              echo "✅ Successfully notified testers"
-            else
-              echo "⚠️ Could not auto-notify testers - add them manually in Firebase Console"
-              echo "🔗 Firebase Console: https://console.firebase.google.com/project/$FIREBASE_PROJECT_ID/appdistribution"
-            fi
-          else
-            echo "ℹ️ No testers specified - add them manually in Firebase Console"
-            echo "🔗 Firebase Console: https://console.firebase.google.com/project/$FIREBASE_PROJECT_ID/appdistribution"
-          fi
+            --release-notes "$RELEASE_NOTES" \
+            $TESTERS_PARAM
 
       - name: Clean up Firebase credentials
         if: always()
