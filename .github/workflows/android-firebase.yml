@@ -2,7 +2,7 @@ name: Distribute Android to Firebase
 
 on:
   workflow_run:
-    workflows: ["Build Android APK"]
+    workflows: ["Build Signed Android APK"]
     types: [completed]
     branches: [master]
   workflow_dispatch:
@@ -31,7 +31,7 @@ jobs:
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: 'Build Android APK',
+              workflow_id: 'android-build.yml',
               status: 'completed',
               conclusion: 'success',
               per_page: 10
