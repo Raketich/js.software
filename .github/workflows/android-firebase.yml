@@ -136,22 +136,33 @@ jobs:
           echo "📝 Release Notes:"
           echo "$RELEASE_NOTES"
 
-          # Setup testers parameter
-          TESTERS_PARAM=""
-          if [ -n "${{ vars.FIREBASE_TESTERS }}" ]; then
-            TESTERS_PARAM="--testers ${{ vars.FIREBASE_TESTERS }}"
-            echo "🧑‍💻 Using testers: ${{ vars.FIREBASE_TESTERS }}"
-          else
-            echo "ℹ️ No testers specified - use Firebase Console to add testers"
-          fi
-
-          # Upload to Firebase
+          # Upload to Firebase (without testers first)
           echo "📤 Uploading to Firebase App Distribution..."
           firebase appdistribution:distribute "${{ env.APK_PATH }}" \
             --project "$FIREBASE_PROJECT_ID" \
             --app "$FIREBASE_APP_ID" \
-            --release-notes "$RELEASE_NOTES" \
-            $TESTERS_PARAM
+            --release-notes "$RELEASE_NOTES"
+
+          # Try to add testers if configured (non-blocking)
+          if [ -n "${{ vars.FIREBASE_TESTERS }}" ]; then
+            echo "🧑‍💻 Attempting to add testers: ${{ vars.FIREBASE_TESTERS }}"
+            echo "⏳ Waiting 5 seconds for release to be ready..."
+            sleep 5
+            
+            # Try to distribute to testers (allow failure)
+            if firebase appdistribution:distribute "${{ env.APK_PATH }}" \
+              --project "$FIREBASE_PROJECT_ID" \
+              --app "$FIREBASE_APP_ID" \
+              --testers "${{ vars.FIREBASE_TESTERS }}" 2>/dev/null; then
+              echo "✅ Successfully notified testers"
+            else
+              echo "⚠️ Could not auto-notify testers - add them manually in Firebase Console"
+              echo "🔗 Firebase Console: https://console.firebase.google.com/project/$FIREBASE_PROJECT_ID/appdistribution"
+            fi
+          else
+            echo "ℹ️ No testers specified - add them manually in Firebase Console"
+            echo "🔗 Firebase Console: https://console.firebase.google.com/project/$FIREBASE_PROJECT_ID/appdistribution"
+          fi
 
       - name: Clean up Firebase credentials
         if: always()
